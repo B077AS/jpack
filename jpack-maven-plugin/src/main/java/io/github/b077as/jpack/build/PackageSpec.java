@@ -20,6 +20,8 @@ public final class PackageSpec {
     public Path stub;
     /** Whether the stub is itself a part, so that a release can replace it. */
     public boolean includeStub = true;
+    /** Parts published as the plain file they consist of (a jar), not as a zip. Needs a stub that understands manifest format 2. */
+    public java.util.List<String> rawParts = java.util.List.of();
 
     /** Part name to the folder with its files. A part becomes a folder of that name in the install folder. */
     public final Map<String, Path> parts = new LinkedHashMap<>();
@@ -50,6 +52,8 @@ public final class PackageSpec {
      * {@link #appImageTool}.
      */
     public boolean appImage;
+    /** File name of the AppImage, or null for {@code <executable>-<version>-<arch>.AppImage}. The block index is this name plus {@code .blocks}. */
+    public String appImageName;
     /** The {@code appimagetool} executable. */
     public Path appImageTool;
     /** A PNG for the AppImage's icon. */

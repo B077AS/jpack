@@ -14,6 +14,7 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.PosixFileAttributeView;
 import java.nio.file.attribute.PosixFilePermission;
 import java.util.HashSet;
+import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
@@ -27,14 +28,17 @@ import java.util.stream.Stream;
  * <ul>
  *   <li>{@code image/<platform>/}: the install folder as it should be on the user's disk (the stub under the app's name,
  *       {@code jpack.json}, one folder per part). Wrap it in an installer, a zip or a tar.gz.</li>
- *   <li>{@code release/}: what updates are served from: {@code jpack-<platform>.json} and one zip per part, named by its
- *       hash. Upload all of it to the place {@link PackageSpec#updateUrl} points at (a GitHub release, any web server).</li>
+ *   <li>{@code release/}: what updates are served from: {@code jpack-<platform>.json} and one zip per part, named by part and
+ *       platform. Upload the parts first and the manifest last, to the place {@link PackageSpec#updateUrl} points at (a GitHub release, any web server).</li>
  * </ul>
  */
 public final class Packager {
 
-    /** The manifest format this version writes. */
+    /** The manifest format this version writes: every part is a zip. */
     public static final int FORMAT = 1;
+
+    /** The format of a release with a part that is a plain file (see {@link PackageSpec#rawParts}). */
+    public static final int FORMAT_WITH_PLAIN_PARTS = 2;
 
     /** The part that holds the stub. */
     public static final String STUB_PART = "stub";
@@ -93,7 +97,9 @@ public final class Packager {
 
         Map<String, Object> parts = new LinkedHashMap<>();
         for (var part : partFolders.entrySet()) {
-            parts.put(part.getKey(), zipPart(part.getKey(), part.getValue(), release, spec.platform));
+            parts.put(part.getKey(), spec.rawParts.contains(part.getKey())
+                    ? rawPart(part.getKey(), part.getValue(), release)
+                    : zipPart(part.getKey(), part.getValue(), release, spec.platform));
             copyTree(part.getValue(), image.resolve(part.getKey()));
         }
         if (spec.includeStub) {
@@ -106,7 +112,9 @@ public final class Packager {
         }
 
         Map<String, Object> manifest = new LinkedHashMap<>();
-        manifest.put("format", FORMAT);
+        // Plain (unzipped) parts need a stub that understands them; an older stub then refuses the release instead of
+        // unpacking a jar as if it were a part.
+        manifest.put("format", spec.rawParts.stream().anyMatch(partFolders::containsKey) ? FORMAT_WITH_PLAIN_PARTS : FORMAT);
         manifest.put("name", spec.name);
         manifest.put("version", spec.version);
         if (spec.updateUrl != null && !spec.updateUrl.isBlank()) {
@@ -159,8 +167,10 @@ public final class Packager {
             spec.warn.accept("no AppImage was built: appimagetool was not found (set appImageTool, or put it on the PATH)");
             return null;
         }
+        AppImages.checkName(spec.appImageName); // a bad name fails the build, it is not a warning
         try {
-            String name = executable + "-" + spec.version + "-" + AppImages.architecture(spec.platform) + ".AppImage";
+            String name = spec.appImageName != null ? spec.appImageName
+                    : executable + "-" + spec.version + "-" + AppImages.architecture(spec.platform) + ".AppImage";
             Path built = AppImages.build(image, executable, spec.name, spec.appImageIcon, spec.appImageTool, release.resolve(name), scratch, spec.platform, spec.warn);
             byte[] index = BlockIndex.build(built, BlockIndex.DEFAULT_BLOCK_SIZE);
             Files.write(release.resolve(name + ".blocks"), index);
@@ -252,13 +262,40 @@ public final class Packager {
         return "jpack-" + platform + ".json";
     }
 
+    /**
+     * A part that is one file (a jar) is published as that file, not zipped: nothing to unpack, and the release lists the
+     * jar itself. It keeps its own file name, which is the same on every platform, so a release built on several
+     * platforms from the same jar holds it once.
+     */
+    static Map<String, Object> rawPart(String name, Path folder, Path release) throws IOException {
+        List<Path> files;
+        try (Stream<Path> walk = Files.walk(folder)) {
+            files = walk.filter(Files::isRegularFile).toList();
+        }
+        if (files.size() != 1 || !files.get(0).getParent().equals(folder)) {
+            throw new IllegalArgumentException("the part '" + name + "' can only be published as a plain file when it consists of one file, not "
+                    + files.size() + " in " + folder);
+        }
+        Path file = files.get(0);
+        String fileName = file.getFileName().toString();
+        Files.copy(file, release.resolve(fileName), StandardCopyOption.REPLACE_EXISTING);
+        Map<String, Object> part = new LinkedHashMap<>();
+        part.put("file", fileName);
+        part.put("sha256", Zips.sha256(file));
+        part.put("size", Files.size(file));
+        part.put("packed", false);
+        return part;
+    }
+
     private static Map<String, Object> zipPart(String name, Path folder, Path release, String platform) throws IOException {
         Path temp = Files.createTempFile(release, name, ".zip.tmp");
         try {
             Zips.zip(folder, temp, platform);
             String sha256 = Zips.sha256(temp);
-            // The name carries the hash: a part that did not change keeps its file, one that did never overwrites another.
-            String fileName = name + "-" + sha256.substring(0, 16) + ".zip";
+            // The name carries the platform, so a release folder with several platforms stays readable. It does not carry
+            // the hash: the manifest lists the hash of every part and the stub checks it, so a file that does not match
+            // is refused whatever it is called. Upload the parts first and the manifest last.
+            String fileName = name + "-" + platform + ".zip";
             Files.move(temp, release.resolve(fileName), StandardCopyOption.REPLACE_EXISTING);
             Map<String, Object> part = new LinkedHashMap<>();
             part.put("file", fileName);
@@ -297,7 +334,7 @@ public final class Packager {
         try (Stream<Path> files = Files.list(release)) {
             for (Path file : (Iterable<Path>) files::iterator) {
                 String name = file.getFileName().toString();
-                if (name.endsWith(".zip") && !referenced.contains(name)) {
+                if ((name.endsWith(".zip") || name.endsWith(".jar")) && !referenced.contains(name)) {
                     Files.delete(file);
                 }
             }

@@ -142,6 +142,13 @@ public class PackageMojo extends AbstractMojo {
     @Parameter(property = "jpack.appImage")
     private Boolean appImage;
 
+    /**
+     * File name of the AppImage, for a download link that never changes, such as {@code MyApp.AppImage}. Default:
+     * {@code <executable>-<version>-<arch>.AppImage}. Keep it different per architecture when you build for several.
+     */
+    @Parameter(property = "jpack.appImageName")
+    private String appImageName;
+
     /** The appimagetool executable; default: the APPIMAGETOOL variable, then appimagetool on the PATH. */
     @Parameter(property = "jpack.appImageTool")
     private File appImageTool;
@@ -179,6 +186,14 @@ public class PackageMojo extends AbstractMojo {
     /** Whether releases can replace the stub itself. Default: true. */
     @Parameter(property = "jpack.includeStub")
     private Boolean includeStub;
+
+    /**
+     * Parts to publish as the plain file they consist of, not as a zip: {@code ["app", "launcher"]} for the two jars. The
+     * release then lists the jars themselves, and a jar built once is the same file for every platform. Needs a stub that
+     * understands manifest format 2, so a release that uses it is refused by an older stub (see the README).
+     */
+    @Parameter(property = "jpack.rawParts")
+    private List<String> rawParts;
 
     @Parameter(property = "jpack.outputDirectory", defaultValue = "${project.build.directory}/jpack")
     private File outputDirectory;
@@ -234,10 +249,12 @@ public class PackageMojo extends AbstractMojo {
             spec.policy = first(policy, file.policy, launcherSettings != null ? "manual" : "background");
             spec.intervalHours = first(intervalHours, file.intervalHours, null);
             spec.includeStub = first(includeStub, file.includeStub, true);
+            spec.rawParts = first(rawParts, file.rawParts, java.util.List.of());
             spec.archive = first(archive, file.archive, true);
             Path tool = appImageTool();
             spec.appImage = first(appImage, file.appImage, tool != null);
             spec.appImageTool = tool;
+            spec.appImageName = first(appImageName, file.appImageName, null);
             Path pngIcon = project.getBasedir().toPath().resolve("src/jpack/icon.png");
             spec.appImageIcon = Files.isRegularFile(pngIcon) ? pngIcon : null;
             spec.brandJava = first(brandJava, file.brandJava, true);

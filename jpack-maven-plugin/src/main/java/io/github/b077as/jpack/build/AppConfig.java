@@ -51,6 +51,7 @@ public final class AppConfig {
     public Boolean console;
     public Boolean includeDependencies;
     public Boolean includeStub;
+    public List<String> rawParts;
     public String jar;
     /** A ready runtime folder; without it one is built with jlink. */
     public String runtime;
@@ -62,6 +63,8 @@ public final class AppConfig {
     public List<String> jlinkOptions;
     public Boolean archive;
     public Boolean appImage;
+    /** File name of the AppImage (and, with {@code .blocks}, of its block index). Default: {@code <executable>-<version>-<arch>.AppImage}. */
+    public String appImageName;
     public Boolean brandJava;
     public Branding branding;
     public LauncherSettings launcher;
@@ -83,8 +86,8 @@ public final class AppConfig {
     }
 
     private static final Set<String> TOP = Set.of("name", "version", "executable", "mainClass", "mainModule", "updateUrl", "policy",
-            "intervalHours", "jvmArgs", "args", "env", "console", "includeDependencies", "includeStub", "jar", "runtime", "modules",
-            "addModules", "jmods", "jlinkOptions", "archive", "appImage", "brandJava", "branding", "launcher", "parts");
+            "intervalHours", "jvmArgs", "args", "env", "console", "includeDependencies", "includeStub", "rawParts", "jar", "runtime", "modules",
+            "addModules", "jmods", "jlinkOptions", "archive", "appImage", "appImageName", "brandJava", "branding", "launcher", "parts");
     private static final Set<String> BRANDING = Set.of("icon", "description", "company", "copyright", "product");
     private static final Set<String> LAUNCHER = Set.of("jar", "dependency", "mainClass", "jvmArgs");
     private static final Set<String> PART = Set.of("name", "directory");
@@ -130,6 +133,7 @@ public final class AppConfig {
         c.console = in.bool(json, "console");
         c.includeDependencies = in.bool(json, "includeDependencies");
         c.includeStub = in.bool(json, "includeStub");
+        c.rawParts = in.strings(json, "rawParts");
         c.jar = path(in.string(json, "jar"), baseDir);
         c.runtime = path(in.string(json, "runtime"), baseDir);
         c.modules = in.string(json, "modules");
@@ -138,6 +142,7 @@ public final class AppConfig {
         c.jlinkOptions = in.strings(json, "jlinkOptions");
         c.archive = in.bool(json, "archive");
         c.appImage = in.bool(json, "appImage");
+        c.appImageName = AppImages.checkName(in.string(json, "appImageName"));
         c.brandJava = in.bool(json, "brandJava");
         if (json.get("branding") != null) {
             Map<String, Object> b = in.object(json, "branding");

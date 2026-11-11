@@ -157,7 +157,7 @@ impl Updater {
 
     /// No block index: the whole file is fetched, continuing a partial download when there is one.
     fn download_whole(&self, url: &str, release: &AppImage, new_file: &Path, progress: &mut dyn FnMut(u64, u64)) -> Result<(), String> {
-        let part = crate::manifest::Part { file: release.file.clone(), sha256: release.sha256.clone(), size: release.size };
+        let part = crate::manifest::Part { file: release.file.clone(), sha256: release.sha256.clone(), size: release.size, packed: true };
         progress(0, release.size);
         self.download(url, new_file, &part, &mut |so_far| progress(so_far, release.size)).map_err(|e| format!("downloading the AppImage failed: {e}"))
     }

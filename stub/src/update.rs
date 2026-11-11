@@ -152,7 +152,8 @@ impl Updater {
         for (name, part) in &changed {
             let zip = downloads.join(format!("{}.zip", part.sha256));
             let target = layout.update().join(name);
-            extract(&zip, &target).map_err(|e| format!("unpacking part '{name}' failed: {e}"))?;
+            let staged = if part.packed { extract(&zip, &target) } else { store(&zip, &target, &part.file) };
+            staged.map_err(|e| format!("unpacking part '{name}' failed: {e}"))?;
         }
 
         fsx::write_atomic(&layout.staged_manifest(), &remote.raw).map_err(|e| format!("cannot write the new manifest: {e}"))?;
@@ -365,6 +366,15 @@ pub(crate) fn file_sha256(path: &Path) -> std::io::Result<String> {
 }
 
 /// Unpacks a part. An entry that would land outside the target folder makes the whole zip unusable.
+/// A part that is not a zip: the downloaded file becomes the one file of the part's folder, under its published name.
+fn store(file: &Path, target: &Path, name: &str) -> Result<(), String> {
+    fsx::remove(target).map_err(|e| format!("cannot clear {}: {e}", target.display()))?;
+    fs::create_dir_all(target).map_err(|e| format!("cannot create {}: {e}", target.display()))?;
+    let path = target.join(name);
+    fs::copy(file, &path).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    Ok(())
+}
+
 fn extract(zip: &Path, target: &Path) -> Result<(), String> {
     fsx::remove(target).map_err(|e| format!("cannot clear {}: {e}", target.display()))?;
     fs::create_dir_all(target).map_err(|e| format!("cannot create {}: {e}", target.display()))?;
@@ -434,5 +444,23 @@ mod tests {
         for bad in ["http://example.com/m.json", "http://127.0.0.1.evil.com/m.json", "http://localhost@evil.com/m.json", "ftp://x/m.json", "file:///c:/m.json", "m.json"] {
             assert!(require_safe_url(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_plain_file_part_is_copied_into_its_folder_under_its_published_name() {
+        let root = std::env::temp_dir().join(format!("jpack-store-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let download = root.join("downloaded");
+        fs::write(&download, b"jar bytes").unwrap();
+        let target = root.join("update").join("app");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("left-over"), b"from an earlier attempt").unwrap();
+
+        store(&download, &target, "komm-1.0.0.jar").unwrap();
+
+        assert_eq!(fs::read(target.join("komm-1.0.0.jar")).unwrap(), b"jar bytes");
+        assert!(!target.join("left-over").exists(), "the part's folder holds only the new file");
+        let _ = fs::remove_dir_all(&root);
     }
 }

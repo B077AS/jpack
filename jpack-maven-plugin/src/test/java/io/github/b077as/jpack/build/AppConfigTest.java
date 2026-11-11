@@ -27,6 +27,21 @@ class AppConfigTest {
     }
 
     @Test
+    void rawPartsAreRead() throws Exception {
+        assertNull(read("{}").rawParts);
+        assertEquals(List.of("app", "launcher"), read("{\"rawParts\": [\"app\", \"launcher\"]}").rawParts);
+    }
+
+    @Test
+    void theAppImageNameIsReadAndMustBeAPlainAppImageFileName() throws Exception {
+        assertEquals("Komm.AppImage", read("{\"appImageName\": \"Komm.AppImage\"}").appImageName);
+        assertNull(read("{}").appImageName, "no name set: the versioned default is used");
+        for (String bad : new String[] {"Komm.zip", ".AppImage", "dist/Komm.AppImage", "dist\\\\Komm.AppImage"}) {
+            assertThrows(IOException.class, () -> read("{\"appImageName\": \"" + bad + "\"}"), bad);
+        }
+    }
+
+    @Test
     void everySettingIsReadAndTheRestStaysUnset() throws Exception {
         AppConfig c = read("""
                 {

@@ -29,7 +29,7 @@ host them.
 
 **Updating**
 - Updates **everything**: your jars, the Java runtime, native libraries, assets, plugins, the launcher, and the stub itself.
-- **Component-level downloads**: a release is a set of *parts*, each a zip named by its hash. A part that did not change is not
+- **Component-level downloads**: a release is a set of *parts*, each a zip named after the part and the platform (`runtime-linux-x64.zip`); the manifest lists the hash of each. A part that did not change is not
   downloaded again, so a new jar costs the jar and nothing else.
 - **A new Java runtime is no special case**: it is swapped in together with the app, also from a launcher that is itself running
   on the old runtime (a Java 25 launcher can fetch Java 27 and hand over to an app that runs on it).
@@ -211,9 +211,11 @@ Settings come from three places, in this order of priority: the **pom** (`<confi
 | `javaExecutable` | `jpack.javaExecutable` | set by branding | Java executable for every entry, relative to the install folder |
 | `archive` | `jpack.archive` | `true` | Also write the `.zip`/`.tar.gz` to `dist/` |
 | `appImage` | `jpack.appImage` | `true` if `appimagetool` is found | Also build an AppImage (Linux) |
+| `appImageName` | `jpack.appImageName` | `<executable>-<version>-<arch>.AppImage` | File name of the AppImage (and `<name>.blocks`). A fixed name such as `MyApp.AppImage` makes `releases/latest/download/MyApp.AppImage` a download link that never changes, with no copy to upload |
 | `appImageTool` | `jpack.appImageTool` | `$APPIMAGETOOL`, then the `PATH` | The `appimagetool` executable |
 | `stub` | `jpack.stub` | the one in the plugin | A stub binary to use instead |
 | `includeStub` | `jpack.includeStub` | `true` | Make the stub a part so releases can replace it |
+| `rawParts` | `jpack.rawParts` | – | Parts to publish as the plain file they consist of, not as a zip: `["app", "launcher"]` for two jars. The release lists `MyApp-1.0.0.jar` itself (no unzipping, one copy for every platform when the jar is built once). Writes manifest format 2, which an older stub refuses, so an installation with an older stub has to be updated through a release that still uses zips first |
 | `configFile` | `jpack.configFile` | `src/jpack/jpack.json` | The settings file |
 | `outputDirectory` | `jpack.outputDirectory` | `target/jpack` | Where `image/`, `release/` and `dist/` go |
 | `skip` | `jpack.skip` | `false` | Skip the goal |
@@ -390,7 +392,7 @@ An AppImage is one read-only file, so it updates by **replacing itself**:
 Only the changed blocks cross the network, even when a changed jar shifts everything after it. Without a block index, the whole
 file is fetched (resumably).
 
-Files in the release: `MyApp-1.0.0-x86_64.AppImage`, `MyApp-1.0.0-x86_64.AppImage.blocks`, and the manifest, which names both.
+Files in the release: `MyApp-1.0.0-x86_64.AppImage`, `MyApp-1.0.0-x86_64.AppImage.blocks`, and the manifest, which names both. Set `appImageName` (for example `MyApp.AppImage`) to drop the version from both names.
 
 `appimagetool` is needed only on the machine that builds, never on your users' machines: they get the finished `.AppImage`. It is not
 bundled with the plugin, and it only runs on Linux (an AppImage needs Unix permissions and symbolic links). Without it the plugin
@@ -460,10 +462,10 @@ Read by the stub:
   "version": "1.2.0",
   "update": { "url": "https://github.com/owner/repo/releases/latest/download/jpack-windows-x64.json", "policy": "manual" },
   "parts": {
-    "runtime":  { "file": "runtime-2c3e5ec10c6104ac.zip",  "sha256": "2c3e…", "size": 46429515 },
-    "app":      { "file": "app-380fb67db5a2a38f.zip",      "sha256": "380f…", "size": 80591490 },
-    "launcher": { "file": "launcher-58706f75cec5a0ef.zip", "sha256": "5870…", "size": 18408313 },
-    "stub":     { "file": "stub-471a0416e6ab4b7c.zip",     "sha256": "471a…", "size": 504884 }
+    "runtime":  { "file": "runtime-windows-x64.zip",  "sha256": "2c3e…", "size": 46429515 },
+    "app":      { "file": "app-windows-x64.zip",      "sha256": "380f…", "size": 80591490 },
+    "launcher": { "file": "launcher-windows-x64.zip", "sha256": "5870…", "size": 18408313 },
+    "stub":     { "file": "stub-windows-x64.zip",     "sha256": "471a…", "size": 504884 }
   },
   "launch": {
     "start": "launcher",

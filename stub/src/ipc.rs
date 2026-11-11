@@ -82,19 +82,35 @@ pub fn serve(app: Arc<App>) -> std::io::Result<(u16, String)> {
     Ok((port, token))
 }
 
+/// How long a new connection may stay silent before its `hello`.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long a write to a program may block. A program that does not read must not hold up the stub (or the other
+/// programs) for long.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
 fn handle(app: Arc<App>, stream: TcpStream, token: &str) -> std::io::Result<()> {
+    handle_with(app, stream, token, HANDSHAKE_TIMEOUT)
+}
+
+fn handle_with(app: Arc<App>, stream: TcpStream, token: &str, handshake_timeout: Duration) -> std::io::Result<()> {
     stream.set_nodelay(true)?;
-    // A program that does not read must not hold up the stub (or the other programs) for long.
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    // Socket timeouts belong to one handle, not to the socket: after `try_clone` (a duplicated handle on Windows) the
+    // two no longer follow each other. So each handle gets its own, and only the reader's matters for reading: the
+    // handshake timeout is set on it and lifted on it. Lifting it on the original left the reader on the 10 s limit,
+    // which ended the connection whenever a program stayed silent that long (the launcher during a download) and
+    // left every later command unread.
     let mut reader = BufReader::new(stream.try_clone()?);
+    reader.get_ref().set_read_timeout(Some(handshake_timeout))?;
 
     let Some(first) = read_message(&mut reader)? else { return Ok(()) };
     if first["cmd"] != "hello" || first["token"].as_str() != Some(token) {
         return Ok(()); // not the program this stub started
     }
-    stream.set_read_timeout(None)?;
-    let client = app.hub.add(stream.try_clone()?);
+    reader.get_ref().set_read_timeout(None)?;
+    // The handle the hub writes to is the original one; it is only ever written to.
+    stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
+    let client = app.hub.add(stream);
     app.on_hello();
     app.hub.send(client, &reply(&first, app.describe()));
 
@@ -167,4 +183,85 @@ fn new_token() -> String {
         token.push_str(&format!("{:016x}", hasher.finish()));
     }
     token
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::layout::Layout;
+    use crate::manifest::Manifest;
+    use std::io::BufReader;
+    use std::net::TcpListener;
+
+    fn app() -> Arc<App> {
+        let root = std::env::temp_dir().join(format!("jpack-ipc-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let manifest = Manifest::parse(
+            br#"{"format":1,"name":"Demo","version":"1","parts":{},
+                 "launch":{"start":"app","entries":{"app":{"classpath":["app/demo.jar"],"mainClass":"demo.Main"}}}}"#,
+        )
+        .unwrap();
+        Arc::new(App::new(Layout::new(root), manifest, true, None))
+    }
+
+    fn send(stream: &mut TcpStream, message: Value) {
+        stream.write_all(format!("{message}\n").as_bytes()).unwrap();
+    }
+
+    fn receive(reader: &mut BufReader<TcpStream>) -> Value {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        serde_json::from_str(&line).unwrap()
+    }
+
+    /// A program that stays silent for longer than the handshake allows (the launcher during a download) must still be
+    /// heard afterwards. Windows sockets used to keep the handshake timeout on the reader's handle after it was lifted
+    /// on the original one, which ended the connection and left the next command unanswered.
+    #[test]
+    fn a_silence_longer_than_the_handshake_timeout_does_not_end_the_connection() {
+        let handshake = Duration::from_millis(300);
+        let app = app();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let served = app.clone();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            handle_with(served, stream, "token", handshake)
+        });
+
+        let mut client = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+        client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut answers = BufReader::new(client.try_clone().unwrap());
+
+        send(&mut client, json!({"id": 1, "cmd": "hello", "token": "token"}));
+        assert_eq!(receive(&mut answers)["ok"], true);
+
+        std::thread::sleep(handshake * 4);
+
+        send(&mut client, json!({"id": 2, "cmd": "next", "entry": "app"}));
+        let answer = receive(&mut answers);
+        assert_eq!(answer["re"], 2);
+        assert_eq!(answer["ok"], true);
+        assert_eq!(app.next.lock().unwrap().as_deref(), Some("app"));
+
+        drop(answers);
+        drop(client);
+        assert!(server.join().unwrap().is_ok(), "the connection ended with an error");
+    }
+
+    /// A connection that never says hello is still dropped once the handshake time is up.
+    #[test]
+    fn a_connection_that_never_says_hello_is_dropped() {
+        let handshake = Duration::from_millis(200);
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = app();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            handle_with(app, stream, "token", handshake)
+        });
+        let _silent = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+        assert!(server.join().unwrap().is_err());
+    }
 }

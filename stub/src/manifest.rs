@@ -8,7 +8,8 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 /// The newest manifest format this stub understands.
-pub const SUPPORTED_FORMAT: u32 = 1;
+/// 1: every part is a zip. 2: a part may also be a single file stored as it is (`packed: false`).
+pub const SUPPORTED_FORMAT: u32 = 2;
 
 /// The part that holds the stub itself. It is not a folder: it replaces the running executable.
 pub const STUB_PART: &str = "stub";
@@ -85,6 +86,18 @@ pub struct Part {
     pub sha256: String,
     /// Size of the zip in bytes.
     pub size: u64,
+    /// False for a part that is one file, published as it is and not zipped (a jar): `file` is then a plain file name, and the
+    /// part is the folder holding that one file under that name. Needs manifest format 2.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub packed: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -163,6 +176,14 @@ impl Manifest {
             if part.file.trim().is_empty() {
                 return Err(format!("part '{name}' names no file"));
             }
+            if !part.packed {
+                if self.format < 2 {
+                    return Err(format!("part '{name}' is not a zip, which needs manifest format 2"));
+                }
+                if !is_plain_file_name(&part.file) {
+                    return Err(format!("part '{name}': '{}' must be a plain file name when the part is not a zip", part.file));
+                }
+            }
         }
         if !self.launch.entries.contains_key(&self.launch.start) {
             return Err(format!("the start entry '{}' is not defined", self.launch.start));
@@ -221,6 +242,11 @@ pub fn is_part_name(name: &str) -> bool {
 }
 
 /// True for a relative path that stays inside the folder it is resolved against.
+/// A file name with no folder in it.
+pub fn is_plain_file_name(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', ':'])
+}
+
 pub fn is_safe_relative(path: &str) -> bool {
     if path.is_empty() || path.starts_with('/') || path.starts_with('\\') || path.contains(':') {
         return false;
@@ -297,5 +323,34 @@ mod tests {
         let mut other_launch = base.clone();
         other_launch.launch.entries.get_mut("app").unwrap().jvm_args.push("-Xmx1g".into());
         assert_ne!(base.fingerprint(), other_launch.fingerprint());
+    }
+
+    #[test]
+    fn a_part_is_a_zip_unless_the_manifest_says_otherwise() {
+        let manifest = sample("1.0.0");
+        assert!(manifest.parts["app"].packed);
+        assert!(!serde_json::to_string(&manifest).unwrap().contains("packed"), "a zip part is written as before");
+    }
+
+    #[test]
+    fn a_plain_file_part_needs_format_2_and_a_plain_file_name() {
+        let mut manifest = sample("1.0.0");
+        manifest.format = 2;
+        let part = manifest.parts.get_mut("app").unwrap();
+        part.packed = false;
+        part.file = "komm-1.0.0.jar".into();
+        assert!(manifest.validate().is_ok());
+        let round_trip = Manifest::parse(serde_json::to_string(&manifest).unwrap().as_bytes()).unwrap();
+        assert!(!round_trip.parts["app"].packed);
+
+        let mut old_format = manifest.clone();
+        old_format.format = 1;
+        assert!(old_format.validate().is_err(), "format 1 knows only zips");
+
+        for bad in ["https://x/komm.jar", "dir/komm.jar", r"dir\komm.jar", ".."] {
+            let mut with_path = manifest.clone();
+            with_path.parts.get_mut("app").unwrap().file = bad.into();
+            assert!(with_path.validate().is_err(), "{bad}");
+        }
     }
 }

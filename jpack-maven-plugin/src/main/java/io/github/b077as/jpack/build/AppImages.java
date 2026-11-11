@@ -25,6 +25,17 @@ final class AppImages {
     private AppImages() {
     }
 
+    /** Checks a configured AppImage file name: a plain file name ending in {@code .AppImage}. Null stays null (the default name). */
+    static String checkName(String name) {
+        if (name == null) {
+            return null;
+        }
+        if (!name.endsWith(".AppImage") || name.length() == ".AppImage".length() || name.contains("/") || name.contains("\\")) {
+            throw new IllegalArgumentException("appImageName must be a plain file name ending in .AppImage, not \"" + name + "\"");
+        }
+        return name;
+    }
+
     /** The architecture name AppImage uses for a platform such as {@code linux-x64}. */
     static String architecture(String platform) {
         return platform.endsWith("arm64") ? "aarch64" : "x86_64";
