@@ -1,0 +1,104 @@
+name: Release
+# Publishing a GitHub release (tag 0.1.0 or v0.1.0) builds the stub for every platform and publishes that version of
+# jpack-api and jpack-maven-plugin to Maven Central. The version comes from the tag; the poms stay at x.y.z-SNAPSHOT.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  # The stub is native code, so it is built on each platform it ships for. Linux is built on Ubuntu 22.04 on purpose: it
+  # links against glibc 2.35 and so runs on that and newer.
+  stub:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows-x64
+          - os: ubuntu-22.04
+            platform: linux-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test the stub
+        working-directory: stub
+        run: cargo test --release --locked
+
+      # build-stub.sh builds with cargo and copies the result to stubs/<os>-<arch>/ (Git Bash on Windows).
+      - name: Build the stub
+        shell: bash
+        run: sh build-stub.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stub-${{ matrix.platform }}
+          path: stubs/${{ matrix.platform }}
+          if-no-files-found: error
+
+  release:
+    needs: stub
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java and Apache Maven
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '25'
+          server-id: central
+          server-username: MAVEN_USERNAME
+          server-password: MAVEN_CENTRAL_TOKEN
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          gpg-passphrase: MAVEN_GPG_PASSPHRASE
+
+      # The plugin bundles whatever is in stubs/ into its jar, so both must be there before Maven runs.
+      - name: Download the stubs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: stub-*
+          path: stubs
+          merge-multiple: false
+
+      - name: Check the stubs and their version
+        run: |
+          set -eu
+          # each artifact was downloaded into stubs/stub-<platform>/: move it to stubs/<platform>/
+          for d in stubs/stub-*; do mv "$d" "stubs/${d#stubs/stub-}"; done
+          ls -lR stubs
+          test -s stubs/windows-x64/jpack-stub.exe
+          test -s stubs/linux-x64/jpack-stub
+          # the version the branded stub shows must be the stub's own
+          cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' stub/Cargo.toml | head -n 1)"
+          java_version="$(sed -n 's/.*STUB_VERSION = "\(.*\)";/\1/p' jpack-maven-plugin/src/main/java/io/github/b077as/jpack/build/Packager.java)"
+          echo "stub/Cargo.toml: $cargo_version, Packager.STUB_VERSION: $java_version"
+          test "$cargo_version" = "$java_version"
+
+      # appimagetool is itself an AppImage; the plugin runs it with --appimage-extract-and-run, so no FUSE is needed. Pinned
+      # to a release and checked against its SHA-256 (not the moving "continuous" build). `file` is on the runner.
+      - name: Get appimagetool
+        run: |
+          set -eu
+          curl -fsSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+          echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  appimagetool" | sha256sum -c -
+          chmod +x appimagetool
+          echo "APPIMAGETOOL=$PWD/appimagetool" >> "$GITHUB_ENV"
+
+      - name: Set release version from the tag
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: mvn -B -ntp versions:set -DnewVersion="${TAG#v}" -DgenerateBackupPoms=false
+
+      # All modules, so the end-to-end tests (the real Linux stub, releases served locally) run before anything is
+      # uploaded, including the AppImage build and delta update. jpack-tests is never published (maven.deploy.skip /
+      # skipPublishing in its pom).
+      - name: Test and publish to Maven Central
+        run: mvn -B -ntp clean deploy -Prelease
+        env:
+          MAVEN_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
+          MAVEN_CENTRAL_TOKEN: ${{ secrets.SONATYPE_PASSWORD }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}

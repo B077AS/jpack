@@ -3,7 +3,7 @@
 All published versions of jpack, newest first. jpack is early software (version 0.x): APIs and file formats can still change
 between versions, and this file says when they do.
 
-## Unreleased
+## 0.1.0 - 2026-11-11
 
 ### Added
 - **The stub**: a small native program (Rust, 1 MB on Windows, 2 MB on Linux) installed next to the app. It starts the app on

@@ -392,6 +392,26 @@ file is fetched (resumably).
 
 Files in the release: `MyApp-1.0.0-x86_64.AppImage`, `MyApp-1.0.0-x86_64.AppImage.blocks`, and the manifest, which names both.
 
+`appimagetool` is needed only on the machine that builds, never on your users' machines: they get the finished `.AppImage`. It is not
+bundled with the plugin, and it only runs on Linux (an AppImage needs Unix permissions and symbolic links). Without it the plugin
+skips the AppImage and builds everything else. It is itself an AppImage and the plugin runs it without FUSE, so downloading the file
+and making it executable is all the setup. In a GitHub Actions job on `ubuntu-latest`:
+
+```yaml
+- name: Get appimagetool
+  run: |
+    curl -fsSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+    echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  appimagetool" | sha256sum -c -
+    chmod +x appimagetool
+    echo "APPIMAGETOOL=$PWD/appimagetool" >> "$GITHUB_ENV"
+
+- name: Build the release
+  run: mvn -B package
+```
+
+The `sha256sum` line pins that exact build. If `appimagetool` is not found the build still succeeds, only without the AppImage (a
+warning says so when `appImage` is `true`), so check that the `.AppImage` is among the files you publish.
+
 ## Windows branding
 
 By default the plugin edits the Windows executables it ships so that nothing says "Java":
