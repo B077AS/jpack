@@ -1,0 +1,8 @@
+target/
+# Built by build-stub.ps1 / build-stub.sh; the release workflow builds them for every platform.
+stubs/
+.idea/
+*.iml
+.vscode/
+/CLAUDE.md
+/docker/

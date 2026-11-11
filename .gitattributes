@@ -1,0 +1,8 @@
+# Normalise line endings in the repository; scripts that run on Linux must keep LF whatever the checkout's settings.
+* text=auto
+*.sh text eol=lf
+*.ps1 text eol=crlf
+*.rs text eol=lf
+Dockerfile* text eol=lf
+*.png binary
+*.ico binary
