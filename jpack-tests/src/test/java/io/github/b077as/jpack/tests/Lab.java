@@ -49,6 +49,7 @@ final class Lab implements AutoCloseable {
         Path runtime = Runtimes_.base();
         boolean launcher;
         boolean branded;
+        boolean archive;
         boolean appImage;
         String policy = "manual";
         boolean updates = true;
@@ -80,6 +81,11 @@ final class Lab implements AutoCloseable {
 
         Recipe appImage() {
             appImage = true;
+            return this;
+        }
+
+        Recipe archive() {
+            archive = true;
             return this;
         }
 
@@ -150,6 +156,7 @@ final class Lab implements AutoCloseable {
         spec.stub = recipe.stub;
         spec.output = dir.resolve("build-" + recipe.version);
         spec.policy = recipe.policy;
+        spec.archive = recipe.archive;
         spec.updateUrl = recipe.updates ? url() : null;
         if (recipe.appImage) {
             spec.appImage = true;
