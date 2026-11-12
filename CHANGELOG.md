@@ -3,6 +3,38 @@
 All published versions of jpack, newest first. jpack is early software (version 0.x): APIs and file formats can still change
 between versions, and this file says when they do.
 
+## 0.1.2 - 2026-11-12
+
+### Fixed
+- **`rawParts` set in `jpack.json` was ignored** (0.1.1). Maven hands a list parameter that has a `property` binding to the plugin as an
+  empty list, not null, and the empty list won over the value from `jpack.json`. `rawParts` was the only list or map setting
+  affected, and it worked when set in the pom or with `-Djpack.rawParts`. An empty list or map now counts as "not set".
+
+### Changed
+- The stub reports its own version, now 0.1.2.
+
+## 0.1.1 - 2026-11-11
+
+### Added
+- **`rawParts`**: parts that consist of one file, such as `["app", "launcher"]` for two jars, are published as that file and not
+  as a zip: nothing to unpack, and a jar built once is the same file for every platform. The stub copies the file into the
+  part's folder. The manifest then has `"format": 2` and `"packed": false` on those parts. **A stub older than 0.1.1 refuses
+  such a release**, so use it only once your installations have a 0.1.1 stub (a release that keeps zips is still format 1).
+- **`appImageName`**: the file name of the AppImage, for example `MyApp.AppImage`, so that
+  `releases/latest/download/MyApp.AppImage` is a link that never changes and no copy has to be uploaded. The block index is
+  named after it (`MyApp.AppImage.blocks`).
+
+### Changed
+- **Part files are named after the part and the platform, without a hash**: `runtime-linux-x64.zip` instead of
+  `runtime-5f41f7bb843f5df7.zip`. The manifest lists the SHA-256 of every part and the stub checks it, so the name does not need
+  to. Upload the parts first and the manifest last. Installations of 0.1.0 update to such a release as before: the stub compares
+  parts by hash, not by file name.
+
+### Fixed
+- **The stub dropped the connection of a program that stayed silent for 10 seconds** (Windows). The handshake timeout was lifted
+  on the original socket but stayed on the clone the stub reads from, so a launcher waiting for a long download could not send its
+  next request (`startAfterExit` ended with "The jpack stub did not answer"), although the download itself had finished.
+
 ## 0.1.0 - 2026-11-11
 
 ### Added

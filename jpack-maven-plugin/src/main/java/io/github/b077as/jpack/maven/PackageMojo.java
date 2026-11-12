@@ -514,7 +514,21 @@ public class PackageMojo extends AbstractMojo {
     }
 
     /** The pom's value if it set one, else the file's, else the default. */
-    private static <T> T first(T pom, T file, T fallback) {
-        return pom != null ? pom : file != null ? file : fallback;
+    static <T> T first(T pom, T file, T fallback) {
+        return isSet(pom) ? pom : isSet(file) ? file : fallback;
+    }
+
+    /**
+     * A list or map parameter that has a {@code property} binding arrives empty, not null, when nothing sets it. That
+     * must not hide the value in {@code jpack.json}.
+     */
+    private static boolean isSet(Object value) {
+        if (value instanceof java.util.Collection<?> collection) {
+            return !collection.isEmpty();
+        }
+        if (value instanceof Map<?, ?> map) {
+            return !map.isEmpty();
+        }
+        return value != null;
     }
 }

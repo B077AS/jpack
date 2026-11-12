@@ -1,5 +1,6 @@
 package io.github.b077as.jpack.tests;
 
+import io.github.b077as.jpack.internal.Json;
 import io.github.b077as.jpack.build.Packager;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
@@ -64,12 +65,29 @@ class UpdateFlowTest {
 
     @Test
     void anAppImageUpdatesItselfFetchingOnlyTheBlocksThatChangedAndTheAppThatStartsIsTheNewOne() throws Exception {
+        anAppImageUpdatesItself("appimage", null);
+    }
+
+    /** What Komm does: the same file name in every release, so releases/latest/download/App.AppImage never changes. */
+    @Test
+    void anAppImageWithAFixedNameUpdatesItselfFromTheSameNameAndItsBlocksAreNamedAfterIt() throws Exception {
+        anAppImageUpdatesItself("appimage-fixed", "App.AppImage");
+    }
+
+    private void anAppImageUpdatesItself(String labName, String fixedName) throws Exception {
         Assumptions.assumeTrue(Lab.PLATFORM.startsWith("linux"), "AppImages are for Linux");
         Assumptions.assumeTrue(Lab.appImageTool() != null, "needs appimagetool (APPIMAGETOOL or on the PATH)");
-        try (Lab lab = new Lab("appimage")) {
-            Packager.Packaged one = lab.build(new Lab.Recipe("1.0.0").withLauncher().appImage());
-            Packager.Packaged two = lab.build(new Lab.Recipe("2.0.0").withLauncher().appImage());
+        try (Lab lab = new Lab(labName)) {
+            Packager.Packaged one = lab.build(recipeWithAppImage("1.0.0", fixedName));
+            Packager.Packaged two = lab.build(recipeWithAppImage("2.0.0", fixedName));
             assertTrue(one.appImage() != null && two.appImage() != null, "the AppImages were built");
+            if (fixedName != null) {
+                assertEquals(fixedName, one.appImage().getFileName().toString());
+                assertEquals(fixedName, two.appImage().getFileName().toString());
+                assertTrue(Files.isRegularFile(two.release().resolve(fixedName + ".blocks")), "the block index is named after the AppImage");
+                assertEquals(0, Files.list(two.release()).filter(f -> f.getFileName().toString().endsWith(".AppImage")).filter(f -> !f.getFileName().toString().equals(fixedName)).count(),
+                        "no other AppImage in the release");
+            }
             lab.installAppImage(one);
             lab.publish(two);
             long size = Files.size(two.appImage());
@@ -95,6 +113,11 @@ class UpdateFlowTest {
             assertTrue(fetched < size / 2, "fetched " + fetched + " of " + size + " bytes");
             assertTrue(Files.notExists(lab.dir.resolve("App.AppImage.jpack-new")), "no half-built file is left");
         }
+    }
+
+    private static Lab.Recipe recipeWithAppImage(String version, String fixedName) {
+        Lab.Recipe recipe = new Lab.Recipe(version).withLauncher();
+        return fixedName == null ? recipe.appImage() : recipe.appImage(fixedName);
     }
 
     @Test
@@ -140,6 +163,31 @@ class UpdateFlowTest {
             assertEquals(Lab.partFile(one, "launcher").replaceAll("-.*", ""), "launcher");
             assertTrue(zips.stream().noneMatch(request -> request.startsWith("runtime-")), "the runtime is not downloaded again: " + zips);
             assertTrue(zips.contains(Lab.partFile(two, "app")), "the app is: " + zips);
+        }
+    }
+
+    @Test
+    void aPartPublishedAsAPlainFileIsDownloadedAsThatFileAndTheNewAppStarts() throws Exception {
+        try (Lab lab = new Lab("raw-parts")) {
+            Packager.Packaged one = lab.build(new Lab.Recipe("1.0.0").withLauncher().rawParts("app", "launcher"));
+            Packager.Packaged two = lab.build(new Lab.Recipe("2.0.0").withLauncher().rawParts("app", "launcher"));
+            lab.install(one);
+            lab.publish(two);
+
+            assertEquals("sample-app.jar", Lab.partFile(two, "app"), "the release lists the jar itself");
+            assertEquals(2L, ((Number) Json.parseObject(Files.readString(two.manifest())).get("format")).longValue(), "plain parts need format 2");
+            assertFalse(Files.exists(two.release().resolve("app-" + Lab.PLATFORM + ".zip")), "no zip for the app");
+
+            Lab.Run run = lab.run();
+            assertEquals(0, run.exitCode(), run.log());
+            assertTrue(lab.requests.stream().anyMatch(request -> request.startsWith("sample-app.jar")), "the jar is fetched as it is: " + lab.requests);
+            assertTrue(lab.requests.stream().noneMatch(request -> request.startsWith("app-")), "not as a zip: " + lab.requests);
+
+            Lab.Run second = lab.run();
+            assertEquals(0, second.exitCode(), second.log());
+            assertTrue(has(lab.lines(), "app 2.0.0"), lab.lines() + " " + second.log());
+            assertEquals("2.0.0", lab.installedVersion());
+            assertTrue(Files.isRegularFile(lab.install.resolve("app/sample-app.jar")), "the jar is in the app folder");
         }
     }
 

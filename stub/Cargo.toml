@@ -1,6 +1,6 @@
 [package]
 name = "jpack-stub"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 description = "The small native program jpack installs next to a Java app: it starts the app and keeps it up to date."
 license = "Apache-2.0"

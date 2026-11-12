@@ -118,7 +118,7 @@ JVM: not the jars, not the runtime, not the launcher.
 <plugin>
   <groupId>io.github.b077as</groupId>
   <artifactId>jpack-maven-plugin</artifactId>
-  <version>0.1.0</version>
+  <version>0.1.2</version>
   <executions>
     <execution>
       <goals><goal>package</goal></goals>
@@ -144,7 +144,7 @@ mvn package
 target/jpack/
   image/windows-x64/   the install folder: MyApp.exe, jpack.json, runtime/, app/
   dist/                MyApp-1.0.0-windows-x64.zip   (or .tar.gz on Linux)
-  release/             jpack-windows-x64.json + one zip per part   <- upload all of these
+  release/             jpack-windows-x64.json + one file per part   <- upload all of these
 ```
 
 Wrap `image/<platform>/` in an installer (Inno Setup, WiX, a `.deb`...), or hand out the archive from `dist/`.
@@ -155,7 +155,7 @@ Wrap `image/<platform>/` in an installer (Inno Setup, WiX, a `.deb`...), or hand
 <dependency>
   <groupId>io.github.b077as</groupId>
   <artifactId>jpack-api</artifactId>
-  <version>0.1.0</version>
+  <version>0.1.2</version>
 </dependency>
 ```
 

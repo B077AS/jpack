@@ -47,7 +47,7 @@ public final class Packager {
      * The version the stub shows in its file properties: its own, not the app's, so that the stub part stays the same file
      * from release to release. Keep it equal to the version in {@code stub/Cargo.toml}.
      */
-    static final String STUB_VERSION = "0.1.0";
+    static final String STUB_VERSION = "0.1.2";
 
     private static final Pattern PART_NAME = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,63}");
 

@@ -51,6 +51,8 @@ final class Lab implements AutoCloseable {
         boolean branded;
         boolean archive;
         boolean appImage;
+        String appImageName;
+        java.util.List<String> rawParts = java.util.List.of();
         String policy = "manual";
         boolean updates = true;
         Path stub = Lab.stub();
@@ -84,6 +86,13 @@ final class Lab implements AutoCloseable {
             return this;
         }
 
+        /** An AppImage with a fixed file name, the same in every release (no version in it). */
+        Recipe appImage(String fileName) {
+            appImage = true;
+            appImageName = fileName;
+            return this;
+        }
+
         Recipe archive() {
             archive = true;
             return this;
@@ -91,6 +100,12 @@ final class Lab implements AutoCloseable {
 
         Recipe branded() {
             branded = true;
+            return this;
+        }
+
+        /** Publishes these parts as the plain file they consist of, not as a zip. */
+        Recipe rawParts(String... names) {
+            rawParts = java.util.List.of(names);
             return this;
         }
 
@@ -161,10 +176,12 @@ final class Lab implements AutoCloseable {
         if (recipe.appImage) {
             spec.appImage = true;
             spec.appImageTool = appImageTool();
+            spec.appImageName = recipe.appImageName;
         }
         if (recipe.branded) {
             spec.branding = new io.github.b077as.jpack.build.Branding();
         }
+        spec.rawParts = recipe.rawParts;
         spec.parts.put("runtime", recipe.runtime);
         spec.parts.put("app", app);
 
