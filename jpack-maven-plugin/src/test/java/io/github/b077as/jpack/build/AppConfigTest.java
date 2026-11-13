@@ -33,6 +33,13 @@ class AppConfigTest {
     }
 
     @Test
+    void theLogSettingIsReadAndMustBeTrueOrFalse() throws Exception {
+        assertNull(read("{}").log, "not set: the pom or the default (on) decides");
+        assertEquals(false, read("{\"log\": false}").log);
+        assertThrows(IOException.class, () -> read("{\"log\": \"no\"}"));
+    }
+
+    @Test
     void theAppImageNameIsReadAndMustBeAPlainAppImageFileName() throws Exception {
         assertEquals("Komm.AppImage", read("{\"appImageName\": \"Komm.AppImage\"}").appImageName);
         assertNull(read("{}").appImageName, "no name set: the versioned default is used");

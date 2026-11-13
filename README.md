@@ -81,7 +81,7 @@ host them.
 **Integration**
 - **Arguments pass through**: whatever the stub is started with (a file, a `myapp://invite/...` link) reaches the program it starts.
 - **`JPACK_*` variables** tell the program where it is installed, which version it is, and how to reach the stub.
-- **Logging** to `jpack.log` next to the stub (or `~/.local/state/jpack/` for an AppImage), with `JPACK_DEBUG=1` to also print it.
+- **Logging** to `jpack.log` next to the stub (or `~/.local/state/jpack/` for an AppImage), with `JPACK_DEBUG=1` to also print it. `"log": false` turns the file off.
 
 ## How it works
 
@@ -199,6 +199,7 @@ Settings come from three places, in this order of priority: the **pom** (`<confi
 | `updateUrl` | `jpack.updateUrl` | – | The folder the release files are served from |
 | `policy` | `jpack.policy` | `manual` with a launcher, else `background` | `background` or `manual` |
 | `intervalHours` | `jpack.intervalHours` | `4` | `background`: hours between two looks while the app stays open |
+| `log` | `jpack.log` | `true` | `false`: the stub does not write `jpack.log`. A failure that stops the app is still logged, since there is no console to show it. Read from the installed release, so a change applies after the next update |
 | `launcher` | – | – | `{ jar \| dependency, mainClass, jvmArgs }` (see below) |
 | `parts` | – | – | Extra folders that update on their own: `{ name, directory }` |
 | `runtime` | `jpack.runtime` | built with jlink | A ready runtime folder to ship instead |

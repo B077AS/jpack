@@ -3,6 +3,18 @@
 All published versions of jpack, newest first. jpack is early software (version 0.x): APIs and file formats can still change
 between versions, and this file says when they do.
 
+## Unreleased
+
+### Added
+- **`log`**: `"log": false` in `jpack.json` (or `log` in the pom, `-Djpack.log=false`) stops the stub from writing `jpack.log`.
+  A failure that stops the app is still logged. The setting is part of the manifest (`"log": false`), so it applies to
+  installations once they have the release; an older stub ignores it and keeps logging. It does not make a new release by itself.
+
+### Changed
+- **The stub leaves no lock files behind.** `jpack.lock` and `jpack.update.lock` are gone from the install folder. On Linux the locks
+  are taken on the install folder and on `jpack.json`, so nothing is created; on Windows a small file in the temp folder exists
+  only while the app runs.
+
 ## 0.1.2 - 2026-11-12
 
 ### Fixed

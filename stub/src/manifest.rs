@@ -23,6 +23,9 @@ pub struct Manifest {
     pub version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update: Option<UpdateConfig>,
+    /// False: the stub does not write `jpack.log` (a failure that stops the app is still logged). Not part of the fingerprint.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub log: bool,
     #[serde(default)]
     pub parts: BTreeMap<String, Part>,
     pub launch: Launch,
@@ -274,6 +277,18 @@ mod tests {
         assert_eq!(manifest.launch.entries["app"].runtime, "runtime");
         assert!(manifest.update.is_none());
         assert!(!manifest.launch.entries["app"].console);
+    }
+
+    #[test]
+    fn the_log_is_on_unless_the_manifest_turns_it_off() {
+        assert!(sample("1.0.0").log);
+        let mut off = sample("1.0.0");
+        off.log = false;
+        let text = serde_json::to_string(&off).unwrap();
+        assert!(text.contains("\"log\":false"));
+        assert!(!Manifest::parse(text.as_bytes()).unwrap().log);
+        assert!(!serde_json::to_string(&sample("1.0.0")).unwrap().contains("\"log\""), "the default is not written");
+        assert_eq!(off.fingerprint(), sample("1.0.0").fingerprint(), "the setting does not make a new release");
     }
 
     #[test]

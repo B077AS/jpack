@@ -5,6 +5,7 @@
 
 use crate::fsx;
 use crate::layout::Layout;
+use crate::lock::Lock;
 use crate::log;
 use crate::manifest::{hex, Manifest, Part, SUPPORTED_FORMAT};
 use serde::{Deserialize, Serialize};
@@ -99,14 +100,11 @@ impl Updater {
             return Ok(());
         }
         // Only one stub downloads at a time, however many windows of the app are open.
-        let lock = OpenOptions::new().create(true).truncate(false).write(true).open(self.layout.update_lock());
-        let lock = lock.map_err(|e| format!("the install folder cannot be written to: {e}"))?;
-        if lock.try_lock().is_err() {
+        let lock = Lock::update(&self.layout).map_err(|e| format!("the install folder cannot be written to: {e}"))?;
+        if !lock.try_exclusive() {
             return Err("another running copy of this app is already downloading the update".into());
         }
-        let result = self.stage_locked(installed, remote, check.size, progress);
-        let _ = lock.unlock();
-        result
+        self.stage_locked(installed, remote, check.size, progress)
     }
 
     fn stage_locked(&self, installed: &Manifest, remote: &Remote, total: u64, progress: &mut dyn FnMut(u64, u64)) -> Result<(), String> {

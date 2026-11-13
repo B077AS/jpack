@@ -20,6 +20,7 @@ mod fsx;
 mod ipc;
 mod launch;
 mod layout;
+mod lock;
 mod log;
 mod manifest;
 mod update;
@@ -27,9 +28,10 @@ mod update;
 use app::App;
 use apply::ApplyError;
 use layout::Layout;
+use lock::Lock;
 use manifest::{Policy, SUPPORTED_FORMAT};
 use std::ffi::OsString;
-use std::fs::{File, OpenOptions};
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -67,13 +69,14 @@ fn run() -> i32 {
     let lock = InstallLock::open(&layout);
     let writable = match &app_image {
         Some(path) => appimage::can_replace(path),
-        None => lock.usable(),
+        None => lock.usable() && layout.writable(),
     };
     if !writable {
         log!("the install folder cannot be written to: the app starts, but it will not be updated");
     }
 
-    if lock.try_exclusive() {
+    // (An AppImage's folder is a read-only mount: there is nothing to recover or swap in it.)
+    if app_image.is_none() && writable && lock.try_exclusive() {
         match apply::recover_and_apply(&layout, &exe) {
             Ok(_) => {}
             Err(ApplyError::Deferred(e)) => log!("the update is tried again later: {e}"),
@@ -91,6 +94,7 @@ fn run() -> i32 {
     if installed.format > SUPPORTED_FORMAT {
         return fatal("The installation is newer than this program understands. Install the app again.");
     }
+    log::decide(installed.log);
 
     let app = Arc::new(App::new(layout.clone(), installed, writable, app_image.clone()));
     let channel = match ipc::serve(app.clone()) {
@@ -284,38 +288,34 @@ fn exit_code(status: std::process::ExitStatus) -> i32 {
 /// The lock that keeps file swaps and running programs apart. Every stub holds it shared while its program runs; a swap
 /// needs it exclusively, so it only happens when no window of the app is open.
 struct InstallLock {
-    file: Option<File>,
+    lock: Option<Lock>,
 }
 
 impl InstallLock {
     fn open(layout: &Layout) -> InstallLock {
-        InstallLock { file: OpenOptions::new().create(true).truncate(false).write(true).open(layout.lock()).ok() }
+        InstallLock { lock: Lock::install(layout).ok() }
     }
 
     fn usable(&self) -> bool {
-        self.file.is_some()
+        self.lock.is_some()
     }
 
     /// Gives up the shared lock and tries for the exclusive one. On `false` the caller holds nothing.
     fn try_exclusive(&self) -> bool {
-        let Some(file) = &self.file else { return false };
-        let _ = file.unlock();
-        file.try_lock().is_ok()
+        self.lock.as_ref().is_some_and(Lock::try_exclusive)
     }
 
     /// Takes the shared lock, waiting while another stub swaps files.
     fn shared(&self) {
-        if let Some(file) = &self.file {
-            let _ = file.unlock();
-            if let Err(e) = file.lock_shared() {
-                log!("the install lock could not be taken: {e}");
-            }
+        if let Some(Err(e)) = self.lock.as_ref().map(Lock::shared) {
+            log!("the install lock could not be taken: {e}");
         }
     }
 }
 
 /// Reports a problem the stub cannot work around and returns the exit code for it.
 fn fatal(message: &str) -> i32 {
+    log::force();
     log!("fatal: {message}");
     eprintln_quiet(message);
     #[cfg(windows)]

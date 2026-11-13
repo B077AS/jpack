@@ -179,6 +179,13 @@ public class PackageMojo extends AbstractMojo {
     @Parameter(property = "jpack.intervalHours")
     private Integer intervalHours;
 
+    /**
+     * Whether the installed stub writes {@code jpack.log} (next to the stub, or in {@code ~/.local/state/jpack/} for an
+     * AppImage). Default: true. A failure that stops the app is logged even with {@code false}.
+     */
+    @Parameter(property = "jpack.log")
+    private Boolean log;
+
     /** A stub binary to use in place of the one that comes with the plugin. */
     @Parameter(property = "jpack.stub")
     private File stub;
@@ -248,6 +255,7 @@ public class PackageMojo extends AbstractMojo {
             LauncherSettings launcherSettings = launcherSettings(file);
             spec.policy = first(policy, file.policy, launcherSettings != null ? "manual" : "background");
             spec.intervalHours = first(intervalHours, file.intervalHours, null);
+            spec.log = first(log, file.log, true);
             spec.includeStub = first(includeStub, file.includeStub, true);
             spec.rawParts = first(rawParts, file.rawParts, java.util.List.of());
             spec.archive = first(archive, file.archive, true);

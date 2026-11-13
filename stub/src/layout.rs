@@ -5,8 +5,6 @@
 //!   MyApp.exe            the stub
 //!   jpack.json           the installed manifest
 //!   jpack.state.json     releases that failed to start (not offered again)
-//!   jpack.lock           held while the app runs (shared) and while files are swapped (exclusive)
-//!   jpack.update.lock    held by the one stub that is downloading
 //!   jpack.log
 //!   runtime/ app/ ...    one folder per part
 //!   update/              a downloaded release waiting to be swapped in
@@ -18,6 +16,8 @@
 //!   old/                 the parts the last swap replaced, kept until the new release has started once
 //!   trash/               parts of a release that was rolled back, about to be deleted
 //! ```
+//!
+//! There are no lock files in the install folder: see `lock.rs`.
 
 use std::path::{Path, PathBuf};
 
@@ -39,12 +39,12 @@ impl Layout {
         self.root.join("jpack.state.json")
     }
 
-    pub fn lock(&self) -> PathBuf {
-        self.root.join("jpack.lock")
-    }
-
-    pub fn update_lock(&self) -> PathBuf {
-        self.root.join("jpack.update.lock")
+    /// Whether files can be created in the install folder, which is what an update needs.
+    pub fn writable(&self) -> bool {
+        let probe = self.root.join(format!("jpack.write-test-{}", std::process::id()));
+        let created = std::fs::OpenOptions::new().write(true).create_new(true).open(&probe).is_ok();
+        let _ = std::fs::remove_file(probe);
+        created
     }
 
     pub fn log(&self) -> PathBuf {

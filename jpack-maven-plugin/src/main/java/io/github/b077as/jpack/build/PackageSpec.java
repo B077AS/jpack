@@ -38,6 +38,8 @@ public final class PackageSpec {
     public String policy = "background";
     /** With {@code background}: hours between two looks while the app stays open. */
     public Integer intervalHours;
+    /** False: the installed stub does not write {@code jpack.log} (the manifest says {@code "log": false}). */
+    public boolean log = true;
 
     /**
      * The icon and names for the stub and the Java launcher (Windows only). Null leaves the programs as they are; with a

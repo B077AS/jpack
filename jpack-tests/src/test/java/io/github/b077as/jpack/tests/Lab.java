@@ -54,6 +54,7 @@ final class Lab implements AutoCloseable {
         String appImageName;
         java.util.List<String> rawParts = java.util.List.of();
         String policy = "manual";
+        boolean log = true;
         boolean updates = true;
         Path stub = Lab.stub();
 
@@ -78,6 +79,12 @@ final class Lab implements AutoCloseable {
 
         Recipe policy(String value) {
             policy = value;
+            return this;
+        }
+
+        /** The release says {@code "log": false}. */
+        Recipe withoutLog() {
+            log = false;
             return this;
         }
 
@@ -171,6 +178,7 @@ final class Lab implements AutoCloseable {
         spec.stub = recipe.stub;
         spec.output = dir.resolve("build-" + recipe.version);
         spec.policy = recipe.policy;
+        spec.log = recipe.log;
         spec.archive = recipe.archive;
         spec.updateUrl = recipe.updates ? url() : null;
         if (recipe.appImage) {

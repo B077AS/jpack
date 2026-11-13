@@ -224,6 +224,21 @@ class UpdateFlowTest {
     }
 
     @Test
+    void theStubWritesNoLogWhenTheReleaseSaysSo() throws Exception {
+        try (Lab quiet = new Lab("log-off"); Lab normal = new Lab("log-on")) {
+            quiet.install(quiet.build(new Lab.Recipe("1.0.0").withoutLog()));
+            normal.install(normal.build(new Lab.Recipe("1.0.0")));
+
+            quiet.run();
+            normal.run();
+
+            assertEquals(1, quiet.lines().size(), "the app itself still runs");
+            assertFalse(Files.exists(quiet.install.resolve("jpack.log")), "no log file at all");
+            assertTrue(Files.size(normal.install.resolve("jpack.log")) > 0, "the default is to log");
+        }
+    }
+
+    @Test
     void whenTheInstalledVersionIsTheNewestNothingIsDownloaded() throws Exception {
         try (Lab lab = new Lab("up-to-date")) {
             Packager.Packaged one = lab.build(new Lab.Recipe("1.0.0").behavior("update"));

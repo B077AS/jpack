@@ -2,30 +2,79 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_BYTES: u64 = 512 * 1024;
 
-static FILE: OnceLock<Mutex<Option<File>>> = OnceLock::new();
+/// Lines kept in memory while it is not yet known whether the log is wanted.
+const MAX_WAITING: usize = 500;
+
+/// Whether the log is wanted is a setting of the installed manifest, which is only read some way into the start. Until then
+/// the lines wait in memory: they are written when the log turns out to be wanted (or something fatal happens), else dropped.
+enum State {
+    Waiting(Vec<String>),
+    On(File),
+    Off,
+}
+
+static STATE: Mutex<State> = Mutex::new(State::Waiting(Vec::new()));
+static PATH: OnceLock<PathBuf> = OnceLock::new();
 static ECHO: OnceLock<bool> = OnceLock::new();
 
-/// Opens the log (starting it again from empty once it has grown large). Without a writable folder nothing is logged.
+/// Says where the log goes. Nothing is created until [`decide`] (or [`force`]) says so.
 pub fn init(path: &Path) {
-    let too_big = std::fs::metadata(path).map(|m| m.len() > MAX_BYTES).unwrap_or(false);
-    let file = OpenOptions::new().create(true).append(!too_big).write(true).truncate(too_big).open(path).ok();
-    let _ = FILE.set(Mutex::new(file));
+    let _ = PATH.set(path.to_path_buf());
     let _ = ECHO.set(std::env::var_os("JPACK_DEBUG").is_some());
+}
+
+/// The manifest's `log` setting is known: write the log (starting it again from empty once it has grown large) or not.
+pub fn decide(wanted: bool) {
+    if wanted {
+        force();
+    } else if let Ok(mut state) = STATE.lock() {
+        if matches!(*state, State::Waiting(_)) {
+            *state = State::Off;
+        }
+    }
+}
+
+/// Writes the log whatever the setting says, for a failure that stops the app: it must be possible to find out why.
+pub fn force() {
+    let Ok(mut state) = STATE.lock() else { return };
+    let lines = match &*state {
+        State::On(_) => return,
+        State::Waiting(lines) => lines.concat(),
+        State::Off => String::new(),
+    };
+    let file = PATH.get().and_then(|path| {
+        let too_big = std::fs::metadata(path).map(|m| m.len() > MAX_BYTES).unwrap_or(false);
+        OpenOptions::new().create(true).append(!too_big).write(true).truncate(too_big).open(path).ok()
+    });
+    *state = match file {
+        Some(mut file) => {
+            let _ = file.write_all(lines.as_bytes());
+            State::On(file)
+        }
+        // Without a writable folder nothing is logged.
+        None => State::Off,
+    };
 }
 
 pub fn write(message: &str) {
     let line = format!("{} [{}] {}\n", timestamp(), std::process::id(), message);
-    if let Some(lock) = FILE.get() {
-        if let Ok(mut guard) = lock.lock() {
-            if let Some(file) = guard.as_mut() {
+    if let Ok(mut state) = STATE.lock() {
+        match &mut *state {
+            State::Waiting(lines) => {
+                if lines.len() < MAX_WAITING {
+                    lines.push(line.clone());
+                }
+            }
+            State::On(file) => {
                 let _ = file.write_all(line.as_bytes());
             }
+            State::Off => {}
         }
     }
     if *ECHO.get().unwrap_or(&false) {

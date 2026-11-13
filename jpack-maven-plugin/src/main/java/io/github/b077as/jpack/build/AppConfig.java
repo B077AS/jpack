@@ -45,6 +45,8 @@ public final class AppConfig {
     public String updateUrl;
     public String policy;
     public Integer intervalHours;
+    /** False: the stub does not write {@code jpack.log}. Default true. */
+    public Boolean log;
     public List<String> jvmArgs;
     public List<String> args;
     public Map<String, String> env;
@@ -86,7 +88,7 @@ public final class AppConfig {
     }
 
     private static final Set<String> TOP = Set.of("name", "version", "executable", "mainClass", "mainModule", "updateUrl", "policy",
-            "intervalHours", "jvmArgs", "args", "env", "console", "includeDependencies", "includeStub", "rawParts", "jar", "runtime", "modules",
+            "intervalHours", "log", "jvmArgs", "args", "env", "console", "includeDependencies", "includeStub", "rawParts", "jar", "runtime", "modules",
             "addModules", "jmods", "jlinkOptions", "archive", "appImage", "appImageName", "brandJava", "branding", "launcher", "parts");
     private static final Set<String> BRANDING = Set.of("icon", "description", "company", "copyright", "product");
     private static final Set<String> LAUNCHER = Set.of("jar", "dependency", "mainClass", "jvmArgs");
@@ -127,6 +129,7 @@ public final class AppConfig {
         c.updateUrl = in.string(json, "updateUrl");
         c.policy = in.string(json, "policy");
         c.intervalHours = in.integer(json, "intervalHours");
+        c.log = in.bool(json, "log");
         c.jvmArgs = in.strings(json, "jvmArgs");
         c.args = in.strings(json, "args");
         c.env = in.stringMap(json, "env");

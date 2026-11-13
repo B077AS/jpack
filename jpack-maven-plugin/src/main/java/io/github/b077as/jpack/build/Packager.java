@@ -117,6 +117,9 @@ public final class Packager {
         manifest.put("format", spec.rawParts.stream().anyMatch(partFolders::containsKey) ? FORMAT_WITH_PLAIN_PARTS : FORMAT);
         manifest.put("name", spec.name);
         manifest.put("version", spec.version);
+        if (!spec.log) {
+            manifest.put("log", false);
+        }
         if (spec.updateUrl != null && !spec.updateUrl.isBlank()) {
             Map<String, Object> update = new LinkedHashMap<>();
             update.put("url", spec.updateUrl.replaceAll("/+$", "") + "/" + manifestFileName(spec.platform));
