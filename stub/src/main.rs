@@ -8,6 +8,9 @@
 //! 4. When it has exited, swap in a release that was downloaded meanwhile, then start what the program asked for
 //!    (a launcher asks for the app; an app asks for itself to restart), or exit with the program's exit code.
 //!
+//! A launcher can also hand over without exiting first (`start`): when no update waits to be swapped in, the app starts
+//! next to it, says `shown` once its window is up, and the launcher closes then. The stub's exit code is then the app's.
+//!
 //! A release that was just swapped in is on trial: if its first start fails at once, the old parts are put back.
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
@@ -25,15 +28,17 @@ mod log;
 mod manifest;
 mod update;
 
-use app::App;
+use app::{App, Event, Program};
 use apply::ApplyError;
 use layout::Layout;
 use lock::Lock;
 use manifest::{Policy, SUPPORTED_FORMAT};
+use serde_json::json;
 use std::ffi::OsString;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -97,14 +102,16 @@ fn run() -> i32 {
     log::decide(installed.log);
 
     let app = Arc::new(App::new(layout.clone(), installed, writable, app_image.clone()));
-    let channel = match ipc::serve(app.clone()) {
-        Ok(channel) => Some(channel),
+    let port = match ipc::serve(app.clone()) {
+        Ok(port) => Some(port),
         Err(e) => {
             log!("the channel to the app could not be opened: {e}");
             None
         }
     };
+    let events = app.take_events();
     start_background_updates(&app);
+    check_while_the_launcher_starts(&app);
 
     let extra: Vec<OsString> = std::env::args_os().skip(1).collect();
     let runs = Arc::new(AtomicU64::new(0));
@@ -115,55 +122,40 @@ fn run() -> i32 {
     }
     let mut rolled_back = false;
     let mut hops = 0;
+    let starter = Starter { app: &app, layout: &layout, exe: &exe, app_image: app_image.as_deref(), extra: &extra, port, ids: AtomicU64::new(0) };
 
     loop {
         let installed = app.installed();
-        let Some(entry) = installed.launch.entries.get(&entry_name) else {
+        if !installed.launch.entries.contains_key(&entry_name) {
             return fatal(&format!("The installation does not know how to start '{entry_name}'."));
-        };
+        }
         let trial = writable && layout.on_trial();
         *app.next.lock().unwrap() = None;
-        *app.entry.lock().unwrap() = entry_name.clone();
-        app.hello.store(false, Ordering::SeqCst);
         app.trial.store(trial, Ordering::SeqCst);
         let run = runs.fetch_add(1, Ordering::SeqCst) + 1;
 
         log!("starting '{entry_name}' of version {}{}", installed.version, if trial { " (first start after an update)" } else { "" });
         let started = Instant::now();
-        let code = match launch::command(&layout.root, entry, &extra) {
-            Ok(mut command) => {
-                // In an AppImage, links and shortcuts must point at the AppImage file, not at the stub inside its mount.
-                let program = app_image.as_deref().unwrap_or(&exe);
-                command.env("JPACK_HOME", &layout.root).env("JPACK_EXE", program).env("JPACK_NAME", &installed.name).env("JPACK_VERSION", &installed.version).env("JPACK_ENTRY", &entry_name);
-                if let Some((port, token)) = &channel {
-                    command.env("JPACK_PORT", port.to_string()).env("JPACK_TOKEN", token);
+        let mut running: Vec<Program> = Vec::new();
+        // The program that was started first (whose health decides a trial) and the one whose exit code becomes the
+        // stub's: the last one started, so the app's after a launcher handed over. Each with its exit code.
+        let mut first: (u64, i32) = match starter.spawn(&entry_name) {
+            Ok((program, _)) => {
+                if trial {
+                    confirm_when_it_keeps_running(&app, &runs, run);
                 }
-                match command.spawn() {
-                    Ok(mut child) => {
-                        if trial {
-                            confirm_when_it_keeps_running(&app, &runs, run);
-                        }
-                        match child.wait() {
-                            Ok(status) => exit_code(status),
-                            Err(e) => {
-                                log!("waiting for '{entry_name}' failed: {e}");
-                                1
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        log!("'{entry_name}' could not be started: {e}");
-                        126
-                    }
-                }
+                let id = program.id;
+                running.push(program);
+                (id, 0)
             }
-            Err(e) => {
-                log!("'{entry_name}' could not be started: {e}");
-                126
-            }
+            Err(code) => (0, code),
         };
-        let healthy = code == 0 || app.hello.load(Ordering::SeqCst) || started.elapsed() >= HEALTH_WINDOW;
-        log!("'{entry_name}' ended with code {code}");
+        let mut main = first;
+        wait_for_programs(&starter, &events, &mut running, &mut first, &mut main, writable, &mut hops);
+
+        let (first_id, first_code) = first;
+        let code = main.1;
+        let healthy = first_code == 0 || app.said_hello(first_id) || started.elapsed() >= HEALTH_WINDOW;
 
         if app.trial.swap(false, Ordering::SeqCst) || (trial && layout.on_trial()) {
             if healthy {
@@ -228,6 +220,152 @@ fn run() -> i32 {
             }
         }
     }
+}
+
+/// Starts programs: the one the loop begins with, and the ones a running program asks for with `start`.
+struct Starter<'a> {
+    app: &'a Arc<App>,
+    layout: &'a Layout,
+    exe: &'a Path,
+    app_image: Option<&'a Path>,
+    extra: &'a [OsString],
+    port: Option<u16>,
+    ids: AtomicU64,
+}
+
+impl Starter<'_> {
+    /// Starts an entry and a thread that reports its exit to the loop. On failure, the exit code to report.
+    fn spawn(&self, entry_name: &str) -> Result<(Program, u32), i32> {
+        let installed = self.app.installed();
+        let Some(entry) = installed.launch.entries.get(entry_name) else {
+            log!("'{entry_name}' could not be started: this version does not have it");
+            return Err(126);
+        };
+        let mut command = match launch::command(&self.layout.root, entry, self.extra) {
+            Ok(command) => command,
+            Err(e) => {
+                log!("'{entry_name}' could not be started: {e}");
+                return Err(126);
+            }
+        };
+        // In an AppImage, links and shortcuts must point at the AppImage file, not at the stub inside its mount.
+        let program = self.app_image.unwrap_or(self.exe);
+        command.env("JPACK_HOME", &self.layout.root).env("JPACK_EXE", program).env("JPACK_NAME", &installed.name).env("JPACK_VERSION", &installed.version).env("JPACK_ENTRY", entry_name);
+        let id = self.ids.fetch_add(1, Ordering::SeqCst) + 1;
+        let started = Program { id, entry: entry_name.to_string() };
+        if let Some(port) = self.port {
+            // A token per program: the stub knows who is talking, and a program that has exited cannot come back.
+            let token = ipc::new_token();
+            command.env("JPACK_PORT", port.to_string()).env("JPACK_TOKEN", &token);
+            self.app.register(token, started.clone());
+        }
+        match command.spawn() {
+            Ok(mut child) => {
+                let pid = child.id();
+                let app = self.app.clone();
+                let name = entry_name.to_string();
+                std::thread::spawn(move || {
+                    let code = match child.wait() {
+                        Ok(status) => exit_code(status),
+                        Err(e) => {
+                            log!("waiting for '{name}' failed: {e}");
+                            1
+                        }
+                    };
+                    app.send(Event::Exited { id, code });
+                });
+                Ok((started, pid))
+            }
+            Err(e) => {
+                self.app.unregister(id);
+                log!("'{entry_name}' could not be started: {e}");
+                Err(126)
+            }
+        }
+    }
+
+    /// True when a downloaded release waits to be swapped in, which needs every program to have exited first.
+    fn update_waiting(&self, writable: bool) -> bool {
+        (writable && (self.layout.ready().exists() || self.layout.applying().exists())) || self.app.updated.lock().unwrap().is_some()
+    }
+
+    /// A running program (`from`) asks for `entry` to start now. See [`Event::Start`].
+    fn start_now(&self, entry: &str, from: u64, running: &mut Vec<Program>, main: &mut (u64, i32), writable: bool, hops: &mut u32) -> Result<Option<u32>, String> {
+        let Some(asking) = running.iter().find(|program| program.id == from).cloned() else {
+            return Err("the program that asked has ended".into());
+        };
+        if !self.app.installed().launch.entries.contains_key(entry) {
+            return Err(format!("this version has no entry '{entry}'"));
+        }
+        if running.len() > 1 {
+            return Err("another program is already running next to this one".into());
+        }
+        if *hops >= MAX_HOPS {
+            return Err("too many starts in a row".into());
+        }
+        *hops += 1;
+        if self.update_waiting(writable) {
+            log!("'{entry}' starts once '{}' has exited and the update is swapped in", asking.entry);
+            *self.app.next.lock().unwrap() = Some(entry.to_string());
+            return Ok(None);
+        }
+        log!("starting '{entry}' next to '{}'", asking.entry);
+        match self.spawn(entry) {
+            Ok((program, pid)) => {
+                *main = (program.id, 0);
+                running.push(program);
+                Ok(Some(pid))
+            }
+            Err(_) => Err(format!("'{entry}' could not be started; the reason is in the log")),
+        }
+    }
+}
+
+/// Waits until every running program has exited, starting the ones they ask for in between. Records the exit codes of
+/// `first` and `main`, and tells the programs still connected about each exit.
+fn wait_for_programs(starter: &Starter, events: &Receiver<Event>, running: &mut Vec<Program>, first: &mut (u64, i32), main: &mut (u64, i32), writable: bool, hops: &mut u32) {
+    while !running.is_empty() {
+        let Ok(event) = events.recv() else { return };
+        match event {
+            Event::Exited { id, code } => {
+                let Some(index) = running.iter().position(|program| program.id == id) else { continue };
+                let program = running.remove(index);
+                starter.app.unregister(id);
+                log!("'{}' ended with code {code}", program.entry);
+                for slot in [&mut *first, &mut *main] {
+                    if slot.0 == id {
+                        slot.1 = code;
+                    }
+                }
+                starter.app.hub.broadcast(&json!({"event": "exited", "entry": program.entry, "code": code, "shown": starter.app.was_shown(id)}));
+            }
+            Event::Start { entry, from, reply } => {
+                let answer = starter.start_now(&entry, from, running, main, writable, hops);
+                if let Err(e) = &answer {
+                    log!("'{entry}' was not started: {e}");
+                }
+                let _ = reply.send(answer);
+            }
+        }
+    }
+}
+
+/// A launcher's first question is whether there is an update. With the `manual` policy and a launcher as the start entry,
+/// the stub asks the update address while the launcher's Java is still starting, and the launcher's `check` gets that
+/// answer at once instead of waiting for the network.
+fn check_while_the_launcher_starts(app: &Arc<App>) {
+    let installed = app.installed();
+    let Some(config) = &installed.update else { return };
+    let starts_a_launcher = installed.launch.start != "app" && installed.launch.entries.contains_key("app");
+    if config.policy != Policy::Manual || !app.writable || !starts_a_launcher || std::env::var_os("JPACK_START").is_some() {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || match app.check() {
+        Ok(check) if check.available => log!("version {} is published", check.version),
+        Ok(_) => {}
+        Err(e) => log!("looking for an update failed: {e}"),
+    });
 }
 
 /// With the `background` policy the stub looks for updates by itself: shortly after the app has started, and then every

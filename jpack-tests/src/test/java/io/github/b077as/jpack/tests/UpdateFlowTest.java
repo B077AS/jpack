@@ -148,6 +148,66 @@ class UpdateFlowTest {
         }
     }
 
+    /** How many times the update address was asked for its manifest. */
+    private static long manifestRequests(Lab lab) {
+        return lab.requests.stream().filter(request -> request.startsWith("jpack-") && request.endsWith(".json")).count();
+    }
+
+    @Test
+    void withNothingToUpdateALauncherHandsOverWithoutExitingFirstAndClosesOnceTheAppIsShown() throws Exception {
+        try (Lab lab = new Lab("handoff")) {
+            Packager.Packaged one = lab.build(new Lab.Recipe("1.0.0").withLauncher().behavior("shown"));
+            lab.install(one);
+            lab.publish(one);
+
+            Lab.Run run = lab.run(Map.of("SAMPLE_LAUNCHER", "handoff"));
+
+            assertEquals(0, run.exitCode(), run.log());
+            List<String> lines = lab.lines();
+            assertEquals(2, lines.size(), lines + "\n" + run.log());
+            // The app said it was showing while the launcher was still running: the launcher's line comes after it.
+            assertEquals("app 1.0.0 logging=false args= installed=1.0.0 showing", lines.get(0));
+            assertTrue(has(lines.subList(1, 2), "launcher 1.0.0", "available=false", "started=true", "shown=yes"), lines.get(1));
+            String log = Files.readString(lab.install.resolve("jpack.log"));
+            assertTrue(log.contains("starting 'app' next to 'launcher'"), log);
+            assertEquals(1, manifestRequests(lab), "the stub looked once, before the launcher asked: " + lab.requests);
+        }
+    }
+
+    @Test
+    void withAnUpdateDownloadedTheHandOverWaitsForTheLauncherToExitAndTheNewAppStarts() throws Exception {
+        try (Lab lab = new Lab("handoff-update")) {
+            lab.install(lab.build(new Lab.Recipe("1.0.0").withLauncher().behavior("shown")));
+            lab.publish(lab.build(new Lab.Recipe("2.0.0").withLauncher().behavior("shown")));
+
+            Lab.Run run = lab.run(Map.of("SAMPLE_LAUNCHER", "handoff"));
+
+            assertEquals(0, run.exitCode(), run.log());
+            List<String> lines = lab.lines();
+            assertEquals(2, lines.size(), lines + "\n" + run.log());
+            assertTrue(has(lines.subList(0, 1), "launcher 1.0.0", "available=true", "version=2.0.0", "final=complete", "started=false"), lines.get(0));
+            assertEquals("app 2.0.0 logging=false args= installed=2.0.0 showing", lines.get(1));
+            assertEquals("2.0.0", lab.installedVersion());
+            // The look the stub took while the launcher started served the launcher's check and its download.
+            assertEquals(1, manifestRequests(lab), lab.requests.toString());
+        }
+    }
+
+    @Test
+    void anAppThatEndsBeforeItsWindowAppearsIsReportedToTheLauncherAndItsExitCodeIsTheStubs() throws Exception {
+        try (Lab lab = new Lab("handoff-fails")) {
+            Packager.Packaged one = lab.build(new Lab.Recipe("1.0.0").withLauncher().behavior("code7"));
+            lab.install(one);
+            lab.publish(one);
+
+            Lab.Run run = lab.run(Map.of("SAMPLE_LAUNCHER", "handoff"));
+
+            assertEquals(7, run.exitCode(), run.log());
+            List<String> lines = lab.lines();
+            assertTrue(has(lines, "launcher 1.0.0", "started=true", "failed='app' ended with exit code 7 before its window appeared."), lines + "\n" + run.log());
+        }
+    }
+
     @Test
     void onlyThePartsThatChangedAreDownloaded() throws Exception {
         try (Lab lab = new Lab("changed-only")) {

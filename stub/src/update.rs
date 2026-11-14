@@ -20,6 +20,7 @@ const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const DOWNLOAD_ATTEMPTS: u32 = 3;
 
 /// What a look at the update address found.
+#[derive(Clone)]
 pub struct Check {
     pub available: bool,
     /// The version behind the update address (the installed one when nothing is available).
@@ -38,6 +39,7 @@ impl Check {
     }
 }
 
+#[derive(Clone)]
 struct Remote {
     manifest: Manifest,
     raw: Vec<u8>,

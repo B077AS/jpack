@@ -9,10 +9,15 @@ import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -44,6 +49,27 @@ import java.util.function.Consumer;
  * <p>A launcher does the same and then hands over: {@code jpack.startAfterExit("app"); System.exit(0);}. The stub waits
  * for the launcher to exit, swaps in what was downloaded (a new Java runtime included) and starts the app.
  *
+ * <p>When nothing was downloaded, a launcher can stay on screen until the app's window is up, so there is no moment with
+ * nothing to look at:
+ *
+ * <pre>{@code
+ * if (jpack.startNow("app").get(30, SECONDS).isPresent()) {      // the app is starting next to the launcher
+ *     try {
+ *         jpack.whenShown("app").get(60, SECONDS);                // the app called notifyShown()
+ *     } catch (ExecutionException e) {
+ *         showError(e.getCause().getMessage());                   // it ended before its window appeared
+ *         return;
+ *     } catch (TimeoutException e) {
+ *         // an app that never says so: close anyway
+ *     }
+ * } else {
+ *     showStatus("Starting...");                                   // an update is swapped in once the launcher has exited
+ * }
+ * System.exit(0);
+ * }</pre>
+ *
+ * <p>The app says when its window is on screen: {@code jpack.notifyShown()}.
+ *
  * <p>Listeners and the futures' follow-up steps run on this connection's own thread. A UI must hop to its UI thread
  * ({@code Platform.runLater}, {@code Application.dispatch}, ...) before touching a window.
  *
@@ -59,6 +85,14 @@ public final class Jpack implements AutoCloseable {
     private final Map<Long, CompletableFuture<Map<String, Object>>> pending = new ConcurrentHashMap<>();
     private final List<ProgressListener> progressListeners = new CopyOnWriteArrayList<>();
     private final List<Consumer<String>> readyListeners = new CopyOnWriteArrayList<>();
+    private final Set<String> features;
+
+    /** Entries that said their window is on screen, entries that exited before that (with their exit code), and who waits. */
+    private final Object shownLock = new Object();
+    private final Set<String> shownEntries = new HashSet<>();
+    private final Map<String, Integer> endedBeforeShown = new HashMap<>();
+    private final Map<String, List<CompletableFuture<Void>>> shownWaiters = new HashMap<>();
+    private JpackException gone;
 
     private final String appName;
     private final String appVersion;
@@ -77,6 +111,13 @@ public final class Jpack implements AutoCloseable {
         this.canUpdate = Boolean.TRUE.equals(hello.get("canUpdate"));
         this.updatesInBackground = "background".equals(hello.get("policy"));
         this.downloadedVersion = (String) hello.get("staged");
+        Set<String> understood = new HashSet<>();
+        if (hello.get("features") instanceof List) {
+            for (Object feature : (List<?>) hello.get("features")) {
+                understood.add(String.valueOf(feature));
+            }
+        }
+        this.features = Set.copyOf(understood);
     }
 
     /** True when this program was started by a jpack stub, so {@link #connect()} can work. */
@@ -250,6 +291,72 @@ public final class Jpack implements AutoCloseable {
         await(request("next", fields));
     }
 
+    /**
+     * Starts {@code entry} now, next to this program: a launcher hands over to the app without leaving a moment with no
+     * window on screen. Wait for the app with {@link #whenShown}, then exit.
+     *
+     * <p>When a downloaded release waits to be swapped in, the entry cannot start yet (the files are swapped while no
+     * Java program runs). Then this does what {@link #startAfterExit} does, and the future completes empty: exit, and the
+     * stub swaps the update in and starts the entry. A stub older than this library is treated the same way.
+     *
+     * @return completes with the started program's process id, or empty when it starts after this program has exited
+     */
+    public CompletableFuture<OptionalLong> startNow(String entry) {
+        if (entry == null || entry.isBlank()) {
+            throw new IllegalArgumentException("an entry name is needed");
+        }
+        Map<String, Object> fields = new LinkedHashMap<>();
+        fields.put("entry", entry);
+        if (!features.contains("start")) {
+            return request("next", fields).thenApply(answer -> OptionalLong.empty());
+        }
+        synchronized (shownLock) {
+            // A second try after a failed start begins afresh.
+            shownEntries.remove(entry);
+            endedBeforeShown.remove(entry);
+        }
+        return request("start", fields).thenApply(answer -> Boolean.TRUE.equals(answer.get("started")) && answer.get("pid") instanceof Number
+                ? OptionalLong.of(((Number) answer.get("pid")).longValue())
+                : OptionalLong.empty());
+    }
+
+    /**
+     * Tells the stub that this program's window is on screen. A launcher that handed over with {@link #startNow} is
+     * waiting for exactly this to close. Call it once the window is visible (after {@code show()}); calling it more than
+     * once is harmless, and with a stub that does not know it, nothing happens.
+     */
+    public CompletableFuture<Void> notifyShown() {
+        if (!features.contains("shown")) {
+            return CompletableFuture.completedFuture(null);
+        }
+        return request("shown", null).thenApply(answer -> null);
+    }
+
+    /**
+     * Completes when the program started as {@code entry} has said its window is on screen ({@link #notifyShown}), or
+     * fails with a {@link JpackException} when it exits before that. Use it with a timeout: an app that never calls
+     * {@code notifyShown} never completes it.
+     */
+    public CompletableFuture<Void> whenShown(String entry) {
+        CompletableFuture<Void> shown = new CompletableFuture<>();
+        synchronized (shownLock) {
+            if (shownEntries.contains(entry)) {
+                shown.complete(null);
+            } else if (endedBeforeShown.containsKey(entry)) {
+                shown.completeExceptionally(endedEarly(entry, endedBeforeShown.get(entry)));
+            } else if (gone != null) {
+                shown.completeExceptionally(gone);
+            } else {
+                shownWaiters.computeIfAbsent(entry, name -> new ArrayList<>()).add(shown);
+            }
+        }
+        return shown;
+    }
+
+    private static JpackException endedEarly(String entry, int code) {
+        return new JpackException("'" + entry + "' ended with exit code " + code + " before its window appeared.");
+    }
+
     /** Closes the connection. The stub keeps running, and so does a download it has started. */
     @Override
     public void close() {
@@ -322,11 +429,18 @@ public final class Jpack implements AutoCloseable {
                 ending = "The connection to the jpack stub broke: " + e.getMessage();
             }
         }
-        JpackException gone = new JpackException(ending);
+        JpackException ended = new JpackException(ending);
         for (CompletableFuture<Map<String, Object>> waiting : pending.values()) {
-            waiting.completeExceptionally(gone);
+            waiting.completeExceptionally(ended);
         }
         pending.clear();
+        List<CompletableFuture<Void>> waiting = new ArrayList<>();
+        synchronized (shownLock) {
+            gone = ended;
+            shownWaiters.values().forEach(waiting::addAll);
+            shownWaiters.clear();
+        }
+        waiting.forEach(future -> future.completeExceptionally(ended));
     }
 
     private void answer(Map<String, Object> message) {
@@ -354,6 +468,30 @@ public final class Jpack implements AutoCloseable {
             downloadedVersion = version;
             for (Consumer<String> listener : readyListeners) {
                 call(() -> listener.accept(version));
+            }
+        } else if ("shown".equals(event) && message.get("entry") instanceof String) {
+            String shownEntry = (String) message.get("entry");
+            List<CompletableFuture<Void>> waiting;
+            synchronized (shownLock) {
+                shownEntries.add(shownEntry);
+                waiting = shownWaiters.remove(shownEntry);
+            }
+            if (waiting != null) {
+                waiting.forEach(future -> future.complete(null));
+            }
+        } else if ("exited".equals(event) && message.get("entry") instanceof String && !Boolean.TRUE.equals(message.get("shown"))) {
+            String endedEntry = (String) message.get("entry");
+            int code = message.get("code") instanceof Number ? ((Number) message.get("code")).intValue() : -1;
+            List<CompletableFuture<Void>> waiting;
+            synchronized (shownLock) {
+                if (shownEntries.contains(endedEntry)) {
+                    return;
+                }
+                endedBeforeShown.put(endedEntry, code);
+                waiting = shownWaiters.remove(endedEntry);
+            }
+            if (waiting != null) {
+                waiting.forEach(future -> future.completeExceptionally(endedEarly(endedEntry, code)));
             }
         }
     }

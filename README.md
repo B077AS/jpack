@@ -49,7 +49,8 @@ host them.
   used the next time the app starts. The app does not have to contain any update code.
 - **`manual`**: nothing happens unless the app or its launcher asks.
 - **Launcher flow**: a launcher (JavaFX, Swing, Jolt, anything) shows "checking / downloading 42% / installing", exits, and the stub
-  swaps the files and starts the updated app, all in the same launch.
+  swaps the files and starts the updated app, all in the same launch. When there is nothing to swap, the launcher can start the app
+  next to itself and stay on screen until the app's window is up (`startNow`, `notifyShown`): no blank moment between the two.
 - **In-app flow**: the app downloads while the user works and offers "Restart to update".
 - You draw all the UI. jpack only reports numbers.
 
@@ -103,7 +104,8 @@ One launch:
 3. While the program runs, the stub serves its requests (`check`, `download`, progress events) over a loopback channel, and with the
    `background` policy checks for updates itself.
 4. When the program exits, the stub swaps in what was downloaded, then starts whatever the program asked for next. A launcher asks
-   for the app: `jpack.startAfterExit("app")`.
+   for the app: `jpack.startAfterExit("app")`. (Or, with nothing to swap, it starts the app next to itself with `startNow("app")` and
+   exits once the app says its window is up.)
 5. A release that was just swapped in is on trial. If its first start fails before saying hello (and before running ten seconds),
    the old files are put back. Otherwise the replaced files are deleted.
 
@@ -306,6 +308,9 @@ Jpack jpack = Jpack.connect();
 | `startAfterExit(entry)` | What the stub starts once this program has exited (after swapping a downloaded release in) |
 | `restartAfterExit()` | `startAfterExit` of this program's own entry |
 | `cancelStartAfterExit()` | Takes either back |
+| `startNow(entry)` | Starts the entry now, next to this program (a launcher handing over). Completes with its process id, or empty when an update waits to be swapped in: then it starts after this program exits, as with `startAfterExit` |
+| `whenShown(entry)` | Completes when that program has called `notifyShown()`; fails when it exits before that |
+| `notifyShown()` | This program's window is on screen (call it after showing the window) |
 | `close()` | Closes the connection (a running download goes on) |
 
 Failures are `JpackException`s with messages written to be shown or logged as they are (`"…answered 404"`, `"…does not match the
@@ -334,6 +339,40 @@ Platform.exit();                        // the launcher must exit for the swap t
 ```
 
 If the update server cannot be reached, skip the download and still call `startAfterExit("app")`: the installed version starts.
+
+With a launcher and the `manual` policy, the stub looks at the update address as soon as it starts, while the launcher's Java is still
+starting, so the launcher's `check()` usually answers at once. That one look also serves a `download()` that follows within a minute.
+
+**Launcher window that stays until the app is up** – with `startAfterExit`, nothing is on screen between the launcher closing and the
+app's window appearing (the app's Java and UI have to start first). `startNow` starts the app while the launcher is still open, and the
+launcher closes once the app says its window is up:
+
+```java
+// in the launcher, after the check (and the download, if there was one)
+if (jpack.startNow("app").get(30, TimeUnit.SECONDS).isPresent()) {
+    try {
+        jpack.whenShown("app").get(60, TimeUnit.SECONDS);
+    } catch (ExecutionException e) {
+        showError(e.getCause().getMessage());    // "'app' ended with exit code 1 before its window appeared."
+        return;                                   // keep the launcher open, offer a retry (startNow again)
+    } catch (TimeoutException e) {
+        // the app never said so (an older app): close anyway
+    }
+} else {
+    showStatus("Starting…");                     // an update was downloaded: it is swapped in once the launcher has exited
+}
+Platform.exit();
+
+// in the app, once its window is visible
+if (Jpack.isAvailable()) {
+    jpack.notifyShown();
+}
+```
+
+When an update was downloaded, the launcher still has to exit first, because files are only swapped while no Java program runs. Then
+`startNow` behaves like `startAfterExit` and completes empty, and the gap stays: show something like "Starting…" before closing. With a
+stub older than this library, `startNow` also falls back to `startAfterExit`, and `notifyShown` does nothing. The stub's exit code is
+the app's.
 
 **In-app** – download while the user works:
 
@@ -369,8 +408,8 @@ swap it in.
   land outside its part makes the whole part unusable. Part names that clash with the stub's own folders are refused.
 - **Bounded input.** The manifest is limited to 1 MB; the stub's channel limits every line; a download larger than the manifest says
   is refused.
-- **The channel is local and authenticated.** The stub listens on `127.0.0.1` on a random port; the program receives a one-time token
-  in its environment and must present it first. Nothing else can ask the stub to download or restart.
+- **The channel is local and authenticated.** The stub listens on `127.0.0.1` on a random port; each program it starts receives its own
+  one-time token in its environment and must present it first; the token stops working when that program exits. Nothing else can ask the stub to download or restart.
 - **Failure-proof swaps.** Nothing installed is touched until a release is complete and verified. A swap that cannot finish (a file
   held by an antivirus scanner, say) is undone completely and retried later; one that is interrupted is finished on the next start.
 - **Trial and rollback.** A release that crashes on its first start is rolled back and not offered again.

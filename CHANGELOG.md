@@ -9,11 +9,22 @@ between versions, and this file says when they do.
 - **`log`**: `"log": false` in `jpack.json` (or `log` in the pom, `-Djpack.log=false`) stops the stub from writing `jpack.log`.
   A failure that stops the app is still logged. The setting is part of the manifest (`"log": false`), so it applies to
   installations once they have the release; an older stub ignores it and keeps logging. It does not make a new release by itself.
+- **Hand-over without a blank moment**: `Jpack.startNow(entry)` starts the app while the launcher is still open, the app calls
+  `notifyShown()` once its window is visible, and the launcher waits for that with `whenShown(entry)` and closes. Before, nothing was on
+  screen between the launcher closing and the app's window appearing. When a downloaded update waits to be swapped in, `startNow`
+  does what `startAfterExit` does and completes empty (files are only swapped while no Java program runs). If the app exits before it
+  says so, `whenShown` fails with its exit code, so the launcher can show an error instead of vanishing. The stub's exit code is the
+  app's. With an older stub, `startNow` falls back to `startAfterExit` and `notifyShown` does nothing (tried against the 0.1.2 stub).
+- **The update check starts before the launcher asks.** With the `manual` policy and a launcher, the stub looks at the update address
+  as soon as it starts. The launcher's `check()` then usually answers at once, and that one look also serves a `download()` that
+  follows within a minute (one manifest request per launch instead of two).
 
 ### Changed
 - **The stub leaves no lock files behind.** `jpack.lock` and `jpack.update.lock` are gone from the install folder. On Linux the locks
   are taken on the install folder and on `jpack.json`, so nothing is created; on Windows a small file in the temp folder exists
   only while the app runs.
+- **Each program the stub starts gets its own `JPACK_TOKEN`**, so the stub knows whether the launcher or the app is talking, and a
+  token stops working once its program has exited. The stub's `hello` answer lists what it understands (`features`).
 
 ## 0.1.2 - 2026-11-12
 

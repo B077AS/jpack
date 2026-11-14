@@ -3,6 +3,7 @@ package sample;
 import io.github.b077as.jpack.Jpack;
 import io.github.b077as.jpack.UpdateCheck;
 
+import java.util.OptionalLong;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -46,7 +47,21 @@ public final class SampleLauncher {
             } catch (ExecutionException e) {
                 line.append(" error=").append(e.getCause().getMessage());
             }
-            jpack.startAfterExit("app");
+            if ("handoff".equals(System.getenv("SAMPLE_LAUNCHER"))) {
+                // Hand over without exiting first, and stay until the app says its window is up.
+                OptionalLong pid = jpack.startNow("app").get(60, TimeUnit.SECONDS);
+                line.append(" started=").append(pid.isPresent());
+                if (pid.isPresent()) {
+                    try {
+                        jpack.whenShown("app").get(60, TimeUnit.SECONDS);
+                        line.append(" shown=yes");
+                    } catch (ExecutionException e) {
+                        line.append(" failed=").append(e.getCause().getMessage());
+                    }
+                }
+            } else {
+                jpack.startAfterExit("app");
+            }
         }
         SampleApp.write(line.toString());
         System.exit(0);

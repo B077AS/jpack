@@ -10,13 +10,20 @@
 //! {"id":2,"cmd":"check"}                   is there a newer release?
 //! {"id":3,"cmd":"download"}                download it (answers when it is ready to be swapped in)
 //! {"id":4,"cmd":"next","entry":"app"}      what to start after this program has exited (null: nothing)
+//! {"id":5,"cmd":"start","entry":"app"}     start it now, next to this program (a launcher handing over)
+//! {"id":6,"cmd":"shown"}                   this program's window is on screen
 //! ```
+//!
+//! Each program the stub starts gets its own token, so the stub knows who is talking. `start` answers
+//! `{"started":true,"pid":n}` when the entry was started, or `{"started":false}` when an update is downloaded and has to be
+//! swapped in first: then the entry starts after the running programs have exited, as with `next`.
 //!
 //! The stub answers each with `{"re":<id>,"ok":true,...}` or `{"re":<id>,"ok":false,"error":"..."}`, and sends events to
 //! every connected program as they happen: `{"event":"progress","received":n,"total":m}` and
-//! `{"event":"ready","version":"..."}`.
+//! `{"event":"ready","version":"..."}`, `{"event":"shown","entry":"app"}` (a program said `shown`) and
+//! `{"event":"exited","entry":"app","code":n,"shown":false}` (a program has exited).
 
-use crate::app::App;
+use crate::app::{App, Event, Program};
 use crate::log;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -62,24 +69,21 @@ impl Hub {
     }
 }
 
-/// Starts listening. Returns the port and the token the started program must present.
-pub fn serve(app: Arc<App>) -> std::io::Result<(u16, String)> {
+/// Starts listening. Returns the port; each program is given its own token when it is started (`App::register`).
+pub fn serve(app: Arc<App>) -> std::io::Result<u16> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
     let port = listener.local_addr()?.port();
-    let token = new_token();
-    let expected = token.clone();
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let app = app.clone();
-            let expected = expected.clone();
             std::thread::spawn(move || {
-                if let Err(e) = handle(app, stream, &expected) {
+                if let Err(e) = handle(app, stream) {
                     log!("a connection from the app ended with an error: {e}");
                 }
             });
         }
     });
-    Ok((port, token))
+    Ok(port)
 }
 
 /// How long a new connection may stay silent before its `hello`.
@@ -89,11 +93,14 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// programs) for long.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
-fn handle(app: Arc<App>, stream: TcpStream, token: &str) -> std::io::Result<()> {
-    handle_with(app, stream, token, HANDSHAKE_TIMEOUT)
+/// How long a `start` waits for the start loop. It answers at once unless it is busy swapping files.
+const START_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn handle(app: Arc<App>, stream: TcpStream) -> std::io::Result<()> {
+    handle_with(app, stream, HANDSHAKE_TIMEOUT)
 }
 
-fn handle_with(app: Arc<App>, stream: TcpStream, token: &str, handshake_timeout: Duration) -> std::io::Result<()> {
+fn handle_with(app: Arc<App>, stream: TcpStream, handshake_timeout: Duration) -> std::io::Result<()> {
     stream.set_nodelay(true)?;
     // Socket timeouts belong to one handle, not to the socket: after `try_clone` (a duplicated handle on Windows) the
     // two no longer follow each other. So each handle gets its own, and only the reader's matters for reading: the
@@ -104,15 +111,19 @@ fn handle_with(app: Arc<App>, stream: TcpStream, token: &str, handshake_timeout:
     reader.get_ref().set_read_timeout(Some(handshake_timeout))?;
 
     let Some(first) = read_message(&mut reader)? else { return Ok(()) };
-    if first["cmd"] != "hello" || first["token"].as_str() != Some(token) {
-        return Ok(()); // not the program this stub started
-    }
+    let program = match (first["cmd"].as_str(), first["token"].as_str()) {
+        (Some("hello"), Some(token)) => app.program(token),
+        _ => None,
+    };
+    let Some(program) = program else {
+        return Ok(()); // not a program this stub started (or one that has exited)
+    };
     reader.get_ref().set_read_timeout(None)?;
     // The handle the hub writes to is the original one; it is only ever written to.
     stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
     let client = app.hub.add(stream);
-    app.on_hello();
-    app.hub.send(client, &reply(&first, app.describe()));
+    app.on_hello(program.id);
+    app.hub.send(client, &reply(&first, app.describe(&program.entry)));
 
     while let Some(message) = read_message(&mut reader)? {
         match message["cmd"].as_str().unwrap_or("") {
@@ -142,12 +153,38 @@ fn handle_with(app: Arc<App>, stream: TcpStream, token: &str, handshake_timeout:
                 *app.next.lock().unwrap() = entry;
                 app.hub.send(client, &reply(&message, json!({})));
             }
-            "hello" => app.hub.send(client, &reply(&message, app.describe())),
+            "start" => {
+                let app = app.clone();
+                let program = program.clone();
+                std::thread::spawn(move || {
+                    let answer = match message["entry"].as_str() {
+                        None => failure(&message, "an entry name is needed"),
+                        Some(entry) => match start(&app, &program, entry) {
+                            Ok(Some(pid)) => reply(&message, json!({"started": true, "pid": pid})),
+                            Ok(None) => reply(&message, json!({"started": false})),
+                            Err(e) => failure(&message, &e),
+                        },
+                    };
+                    app.hub.send(client, &answer);
+                });
+            }
+            "shown" => {
+                app.on_shown(&program);
+                app.hub.send(client, &reply(&message, json!({})));
+            }
+            "hello" => app.hub.send(client, &reply(&message, app.describe(&program.entry))),
             other => app.hub.send(client, &failure(&message, &format!("unknown command '{other}'"))),
         }
     }
     app.hub.remove(client);
     Ok(())
+}
+
+/// Asks the start loop to start `entry` now. See [`Event::Start`].
+fn start(app: &App, from: &Program, entry: &str) -> Result<Option<u32>, String> {
+    let (reply, answer) = std::sync::mpsc::channel();
+    app.send(Event::Start { entry: entry.to_string(), from: from.id, reply });
+    answer.recv_timeout(START_TIMEOUT).map_err(|_| "the stub did not get to it in time".to_string())?
 }
 
 /// Reads one line. `None` at the end of the connection, or for a line that is too long or not JSON.
@@ -172,7 +209,7 @@ fn failure(to: &Value, error: &str) -> Value {
 
 /// 256 bits nobody outside this process can guess. The standard library seeds each `RandomState` from the system's
 /// random source, which is all a token for a loopback port needs.
-fn new_token() -> String {
+pub fn new_token() -> String {
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hasher};
     let mut token = String::with_capacity(64);
@@ -201,7 +238,128 @@ mod tests {
                  "launch":{"start":"app","entries":{"app":{"classpath":["app/demo.jar"],"mainClass":"demo.Main"}}}}"#,
         )
         .unwrap();
-        Arc::new(App::new(Layout::new(root), manifest, true, None))
+        let app = Arc::new(App::new(Layout::new(root), manifest, true, None));
+        app.register("token".into(), Program { id: 1, entry: "app".into() });
+        app
+    }
+
+    /// Serves every connection to a fresh port the way the stub does, and returns the port.
+    fn serve_on_a_port(app: &Arc<App>) -> u16 {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = app.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let app = app.clone();
+                std::thread::spawn(move || handle_with(app, stream, Duration::from_secs(5)));
+            }
+        });
+        port
+    }
+
+    /// Connects and says hello with `token`; returns the writer, the reader and the answer to the hello.
+    fn connect(port: u16, token: &str) -> (TcpStream, BufReader<TcpStream>, Value) {
+        let mut client = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+        client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut answers = BufReader::new(client.try_clone().unwrap());
+        send(&mut client, json!({"id": 1, "cmd": "hello", "token": token}));
+        let hello = receive(&mut answers);
+        (client, answers, hello)
+    }
+
+    /// Reads lines until one matches.
+    fn receive_until(reader: &mut BufReader<TcpStream>, wanted: impl Fn(&Value) -> bool) -> Value {
+        loop {
+            let message = receive(reader);
+            if wanted(&message) {
+                return message;
+            }
+        }
+    }
+
+    /// Each program has its own token: the stub knows which entry is talking, and tells it so.
+    #[test]
+    fn each_program_is_known_by_its_own_token() {
+        let app = app();
+        app.register("launcher-token".into(), Program { id: 2, entry: "launcher".into() });
+        let port = serve_on_a_port(&app);
+
+        let (_a, _ra, hello_app) = connect(port, "token");
+        let (_l, _rl, hello_launcher) = connect(port, "launcher-token");
+
+        assert_eq!(hello_app["entry"], "app");
+        assert_eq!(hello_launcher["entry"], "launcher");
+        assert!(hello_launcher["features"].as_array().unwrap().contains(&json!("start")));
+        assert!(app.said_hello(1) && app.said_hello(2));
+    }
+
+    /// The token of a program that has exited opens nothing.
+    #[test]
+    fn the_token_of_a_program_that_has_exited_is_refused() {
+        let app = app();
+        app.unregister(1);
+        let port = serve_on_a_port(&app);
+        let mut client = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+        client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut answers = BufReader::new(client.try_clone().unwrap());
+        send(&mut client, json!({"id": 1, "cmd": "hello", "token": "token"}));
+        let mut line = String::new();
+        assert_eq!(answers.read_line(&mut line).unwrap(), 0, "the connection is closed without an answer: {line}");
+    }
+
+    /// A program saying `shown` is heard by the others: the launcher that waits to close.
+    #[test]
+    fn shown_reaches_every_connected_program() {
+        let app = app();
+        app.register("launcher-token".into(), Program { id: 2, entry: "launcher".into() });
+        let port = serve_on_a_port(&app);
+        let (_l, mut launcher, _) = connect(port, "launcher-token");
+        let (mut client, mut answers, _) = connect(port, "token");
+
+        send(&mut client, json!({"id": 2, "cmd": "shown"}));
+        assert_eq!(receive_until(&mut answers, |m| m["re"] == 2)["ok"], true);
+
+        let event = receive_until(&mut launcher, |m| m["event"] == "shown");
+        assert_eq!(event["entry"], "app");
+        assert!(app.was_shown(1));
+        assert!(!app.was_shown(2));
+    }
+
+    /// `start` is handed to the start loop with the name of the program that asked, and its answer goes back.
+    #[test]
+    fn start_asks_the_start_loop_and_passes_its_answer_on() {
+        let app = app();
+        let events = app.take_events();
+        let port = serve_on_a_port(&app);
+        let (mut client, mut answers, _) = connect(port, "token");
+
+        let loop_thread = std::thread::spawn(move || {
+            let mut asked = Vec::new();
+            for answer in [Ok(Some(4242)), Ok(None), Err("no such entry".to_string())] {
+                match events.recv_timeout(Duration::from_secs(5)).unwrap() {
+                    Event::Start { entry, from, reply } => {
+                        asked.push((entry, from));
+                        reply.send(answer).unwrap();
+                    }
+                    Event::Exited { .. } => panic!("no program exited"),
+                }
+            }
+            asked
+        });
+
+        send(&mut client, json!({"id": 2, "cmd": "start", "entry": "app2"}));
+        let started = receive_until(&mut answers, |m| m["re"] == 2);
+        assert_eq!((started["ok"].clone(), started["started"].clone(), started["pid"].clone()), (json!(true), json!(true), json!(4242)));
+
+        send(&mut client, json!({"id": 3, "cmd": "start", "entry": "app2"}));
+        let later = receive_until(&mut answers, |m| m["re"] == 3);
+        assert_eq!((later["ok"].clone(), later["started"].clone()), (json!(true), json!(false)));
+
+        send(&mut client, json!({"id": 4, "cmd": "start", "entry": "nope"}));
+        let refused = receive_until(&mut answers, |m| m["re"] == 4);
+        assert_eq!((refused["ok"].clone(), refused["error"].clone()), (json!(false), json!("no such entry")));
+
+        assert_eq!(loop_thread.join().unwrap(), vec![("app2".to_string(), 1), ("app2".to_string(), 1), ("nope".to_string(), 1)]);
     }
 
     fn send(stream: &mut TcpStream, message: Value) {
@@ -227,7 +385,7 @@ mod tests {
         let served = app.clone();
         let server = std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
-            handle_with(served, stream, "token", handshake)
+            handle_with(served, stream, handshake)
         });
 
         let mut client = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
@@ -259,7 +417,7 @@ mod tests {
         let app = app();
         let server = std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
-            handle_with(app, stream, "token", handshake)
+            handle_with(app, stream, handshake)
         });
         let _silent = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
         assert!(server.join().unwrap().is_err());

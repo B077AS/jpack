@@ -34,6 +34,14 @@ public final class SampleApp {
             case "exit" -> {
             }
             case "crash" -> code = 3;
+            case "shown" -> {
+                // Written before saying so: a launcher waiting for it writes its own line after this one.
+                write(line + " showing");
+                try (Jpack jpack = Jpack.connect()) {
+                    jpack.notifyShown().get(30, TimeUnit.SECONDS);
+                }
+                System.exit(0);
+            }
             case "code7" -> code = 7;
             case "update" -> {
                 try (Jpack jpack = Jpack.connect()) {
