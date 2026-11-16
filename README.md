@@ -202,9 +202,11 @@ Settings come from three places, in this order of priority: the **pom** (`<confi
 | `policy` | `jpack.policy` | `manual` with a launcher, else `background` | `background` or `manual` |
 | `intervalHours` | `jpack.intervalHours` | `4` | `background`: hours between two looks while the app stays open |
 | `log` | `jpack.log` | `true` | `false`: the stub does not write `jpack.log`. A failure that stops the app is still logged, since there is no console to show it. Read from the installed release, so a change applies after the next update |
-| `launcher` | – | – | `{ jar \| dependency, mainClass, jvmArgs }` (see below) |
+| `launcher` | – | – | `{ jar \| dependency, mainClass, jvmArgs, console }` (see below) |
 | `parts` | – | – | Extra folders that update on their own: `{ name, directory }` |
 | `runtime` | `jpack.runtime` | built with jlink | A ready runtime folder to ship instead |
+| `start` | `jpack.start` | `launcher` when there is one, else `app` | The entry the stub starts unless `JPACK_START` names another |
+| `systemJava` | `jpack.systemJava` | `false` | Ship no runtime: the entries run on the Java installed on the machine (see [Using the machine's Java](#using-the-machines-java)) |
 | `modules` | `jpack.modules` | detected with jdeps | Modules for the runtime (replaces detection) |
 | `addModules` | `jpack.addModules` | – | Modules to add to the detected ones |
 | `jmods` | `jpack.jmods` | this JDK | The `jmods` folder of the JDK to build the runtime from |
@@ -283,6 +285,28 @@ jar, either by path or as a dependency of the project:
 
 With a launcher, the stub starts it first; the app starts when the launcher asks. The launcher and the app share one runtime and one
 version; both update with every release.
+
+A launcher can also be a command line tool. Set `"console": true` in `launcher` so that on Windows it runs with `java.exe`; started
+from a terminal, it then prints into that terminal and reads from it (the stub attaches to the terminal it was started from). Any
+entry can be started instead of the start entry by setting `JPACK_START=<entry>` for the stub.
+
+**A server and its command line tool**: set `"start": "app"`, so the service (systemd, a Windows service wrapper, a container)
+starts the stub and gets the server, and start the tool as `JPACK_START=launcher <stub> <arguments>`. The tool can check, download
+(showing the progress), stop the service and exit: its stub swaps the files in once nothing runs. The release stays on trial until
+the server's own first start: a run of another entry than the start entry never decides whether a new release is healthy, so a
+`tool status` during the server's first seconds does not confirm it, and a server that fails at once is still rolled back.
+
+### Using the machine's Java
+
+With `"systemJava": true` no runtime is built or shipped: the release holds the jars (and the stub), and every entry runs on the Java
+installed on the machine: `JAVA_HOME/bin/java` when `JAVA_HOME` is set and has one, else the first `java` (Windows: `javaw.exe`, or
+`java.exe` for a console entry) on the `PATH`. Without one the stub logs `no Java was found` and exits with code 126. The manifest
+says `"runtime": "system"` for those entries, which needs a stub from this version on. jpack does not check the Java version: the
+app or the launcher should say so when it is too old. Branding the Java launcher (`brandJava`) does nothing here, since there is no
+runtime to brand.
+
+This suits servers and tools whose machines have Java anyway. For desktop apps a shipped runtime is usually the better choice: nothing
+to install, and the Java version is the one the app was tested with.
 
 ## The Java library
 

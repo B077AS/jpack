@@ -359,12 +359,14 @@ public final class Packager {
             String name = part.getKey();
             String lower = name.toLowerCase(java.util.Locale.ROOT);
             require(PART_NAME.matcher(name).matches() && !lower.equals("update") && !lower.equals("old") && !lower.equals("trash")
-                    && !lower.startsWith("jpack") && !lower.equals(STUB_PART), "'" + name + "' cannot be used as a part name");
+                    && !lower.startsWith("jpack") && !lower.equals(STUB_PART) && !lower.equals(EntrySpec.SYSTEM_RUNTIME),
+                    "'" + name + "' cannot be used as a part name");
             require(Files.isDirectory(part.getValue()), "the folder of part '" + name + "' does not exist: " + part.getValue());
         }
         spec.entries.forEach((name, entry) -> {
             require(entry.mainClass != null || entry.mainModule != null, "entry '" + name + "' needs a main class or a main module");
-            require(spec.parts.containsKey(firstSegment(entry.runtime)), "entry '" + name + "' uses the runtime '" + entry.runtime + "', which is not a part");
+            require(EntrySpec.SYSTEM_RUNTIME.equals(entry.runtime) || spec.parts.containsKey(firstSegment(entry.runtime)),
+                    "entry '" + name + "' uses the runtime '" + entry.runtime + "', which is not a part");
         });
     }
 

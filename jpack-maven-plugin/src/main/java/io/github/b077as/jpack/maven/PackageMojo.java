@@ -110,6 +110,21 @@ public class PackageMojo extends AbstractMojo {
     @Parameter(property = "jpack.runtime")
     private File runtime;
 
+    /**
+     * Ship no runtime: the app and the launcher run on the Java installed on the machine ({@code JAVA_HOME}, else
+     * {@code java} on the {@code PATH}). Default: false.
+     */
+    @Parameter(property = "jpack.systemJava")
+    private Boolean systemJava;
+
+    /**
+     * The entry the stub starts when it is not told otherwise ({@code JPACK_START}): {@code launcher} or {@code app}.
+     * Default: the launcher when there is one. {@code app} with a launcher suits a server whose launcher is a command line
+     * tool: the service starts the stub, the tool is started with {@code JPACK_START=launcher}.
+     */
+    @Parameter(property = "jpack.start")
+    private String start;
+
     /** Modules for the runtime jlink builds, comma separated, replacing what jdeps detects for the app and the launcher. */
     @Parameter(property = "jpack.modules")
     private String modules;
@@ -222,6 +237,8 @@ public class PackageMojo extends AbstractMojo {
         private String dependency;
         private String mainClass;
         private List<String> jvmArgs;
+        /** Windows: start the launcher with a console, for a launcher that is a command line tool. */
+        private Boolean console;
     }
 
     public static class BrandingConfig {
@@ -282,10 +299,21 @@ public class PackageMojo extends AbstractMojo {
             Path launcherJar = launcherSettings == null ? null : launcherJar(launcherSettings);
 
             List<Path> appJars = stageApp(work.resolve("app"), appJarFile, withDependencies || mainMod != null, launcherSettings);
-            spec.parts.put("runtime", runtimeFolder(work, appJars, launcherJar, file));
+            boolean onSystemJava = first(systemJava, file.systemJava, false);
+            if (onSystemJava) {
+                if (runtime != null || file.runtime != null) {
+                    throw new MojoExecutionException("jpack: systemJava ships no runtime, so a runtime folder cannot be set as well.");
+                }
+                getLog().info("jpack: no runtime is shipped: the app runs on the Java installed on the machine (JAVA_HOME, else the PATH)");
+            } else {
+                spec.parts.put("runtime", runtimeFolder(work, appJars, launcherJar, file));
+            }
             spec.parts.put("app", work.resolve("app"));
 
             EntrySpec app = new EntrySpec();
+            if (onSystemJava) {
+                app.runtime = EntrySpec.SYSTEM_RUNTIME;
+            }
             app.mainClass = main;
             app.mainModule = mainMod;
             app.jvmArgs.addAll(first(jvmArgs, file.jvmArgs, List.of()));
@@ -309,6 +337,10 @@ public class PackageMojo extends AbstractMojo {
                 Files.copy(launcherJar, folder.resolve(launcherJar.getFileName()));
                 spec.parts.put("launcher", folder);
                 EntrySpec entry = new EntrySpec();
+                if (onSystemJava) {
+                    entry.runtime = EntrySpec.SYSTEM_RUNTIME;
+                }
+                entry.console = launcherSettings.console;
                 entry.mainClass = launcherSettings.mainClass;
                 if (entry.mainClass == null) {
                     throw new MojoExecutionException("jpack: the launcher needs a mainClass.");
@@ -319,6 +351,7 @@ public class PackageMojo extends AbstractMojo {
                 spec.entries.put("launcher", entry);
                 spec.start = "launcher";
             }
+            spec.start = first(start, file.start, spec.start);
             for (PartConfig part : parts != null ? parts : List.<PartConfig>of()) {
                 spec.parts.put(part.name, part.directory.toPath());
             }
@@ -367,7 +400,7 @@ public class PackageMojo extends AbstractMojo {
     }
 
     /** The launcher after merging the pom and the file; null when there is none. */
-    private record LauncherSettings(File jar, String dependency, String mainClass, List<String> jvmArgs) {
+    private record LauncherSettings(File jar, String dependency, String mainClass, List<String> jvmArgs, boolean console) {
     }
 
     private LauncherSettings launcherSettings(AppConfig file) {
@@ -380,7 +413,8 @@ public class PackageMojo extends AbstractMojo {
                 first(pom.jar, f.jar == null ? null : new File(f.jar), null),
                 first(pom.dependency, f.dependency, null),
                 first(pom.mainClass, f.mainClass, null),
-                first(pom.jvmArgs, f.jvmArgs, List.of()));
+                first(pom.jvmArgs, f.jvmArgs, List.of()),
+                first(pom.console, f.console, false));
     }
 
     private Path launcherJar(LauncherSettings settings) throws MojoExecutionException {

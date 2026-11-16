@@ -57,6 +57,10 @@ public final class AppConfig {
     public String jar;
     /** A ready runtime folder; without it one is built with jlink. */
     public String runtime;
+    /** True: ship no runtime; every entry runs on the Java installed on the machine. */
+    public Boolean systemJava;
+    /** The entry the stub starts unless told otherwise: {@code launcher} or {@code app}. */
+    public String start;
     /** Modules for the runtime, replacing what is detected. */
     public String modules;
     /** Modules added to the ones detected. */
@@ -80,6 +84,8 @@ public final class AppConfig {
         public String dependency;
         public String mainClass;
         public List<String> jvmArgs;
+        /** Windows: start the launcher with a console ({@code java.exe}), for a launcher that is a command line tool. */
+        public Boolean console;
     }
 
     public static final class PartSettings {
@@ -89,9 +95,10 @@ public final class AppConfig {
 
     private static final Set<String> TOP = Set.of("name", "version", "executable", "mainClass", "mainModule", "updateUrl", "policy",
             "intervalHours", "log", "jvmArgs", "args", "env", "console", "includeDependencies", "includeStub", "rawParts", "jar", "runtime", "modules",
-            "addModules", "jmods", "jlinkOptions", "archive", "appImage", "appImageName", "brandJava", "branding", "launcher", "parts");
+            "addModules", "jmods", "jlinkOptions", "archive", "appImage", "appImageName", "brandJava", "branding", "launcher", "parts",
+            "systemJava", "start");
     private static final Set<String> BRANDING = Set.of("icon", "description", "company", "copyright", "product");
-    private static final Set<String> LAUNCHER = Set.of("jar", "dependency", "mainClass", "jvmArgs");
+    private static final Set<String> LAUNCHER = Set.of("jar", "dependency", "mainClass", "jvmArgs", "console");
     private static final Set<String> PART = Set.of("name", "directory");
 
     private static final Pattern VARIABLE = Pattern.compile("\\$\\{([A-Za-z0-9_.\\-]+)}");
@@ -139,6 +146,8 @@ public final class AppConfig {
         c.rawParts = in.strings(json, "rawParts");
         c.jar = path(in.string(json, "jar"), baseDir);
         c.runtime = path(in.string(json, "runtime"), baseDir);
+        c.systemJava = in.bool(json, "systemJava");
+        c.start = in.string(json, "start");
         c.modules = in.string(json, "modules");
         c.addModules = in.string(json, "addModules");
         c.jmods = path(in.string(json, "jmods"), baseDir);
@@ -166,6 +175,7 @@ public final class AppConfig {
             c.launcher.dependency = in.string(l, "dependency");
             c.launcher.mainClass = in.string(l, "mainClass");
             c.launcher.jvmArgs = in.strings(l, "jvmArgs");
+            c.launcher.console = in.bool(l, "console");
         }
         if (json.get("parts") != null) {
             if (!(json.get("parts") instanceof List)) {

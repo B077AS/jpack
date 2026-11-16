@@ -6,6 +6,16 @@ between versions, and this file says when they do.
 ## Unreleased
 
 ### Added
+- **`systemJava`**: a release without a Java runtime. The entries run on the Java installed on the machine (`JAVA_HOME`, else
+  `java` on the `PATH`); the stub says `no Java was found` and exits with 126 when there is none. The manifest marks those entries
+  `"runtime": "system"`, which an older stub does not understand, so the installed stub has to come from this version. `system` can
+  no longer be the name of a part.
+- **Command line launchers on Windows**: `"console": true` in `launcher` starts it with `java.exe`, and a console entry started from a
+  terminal now runs in that terminal (the stub attaches to it and passes it on as the standard streams it was not given) instead
+  of opening a new window whose output is lost. Streams the stub was given, such as a file or a service wrapper's log, are passed
+  on as before.
+- **`start`**: which entry the stub starts unless `JPACK_START` says otherwise. `"start": "app"` with a launcher suits a server
+  whose launcher is a command line tool started with `JPACK_START=launcher`.
 - **`log`**: `"log": false` in `jpack.json` (or `log` in the pom, `-Djpack.log=false`) stops the stub from writing `jpack.log`.
   A failure that stops the app is still logged. The setting is part of the manifest (`"log": false`), so it applies to
   installations once they have the release; an older stub ignores it and keeps logging. It does not make a new release by itself.
@@ -20,6 +30,9 @@ between versions, and this file says when they do.
   follows within a minute (one manifest request per launch instead of two).
 
 ### Changed
+- **Only the start entry's run decides a trial.** A run started with `JPACK_START` naming another entry no longer confirms (or rolls
+  back) a release that was just swapped in; it stays on trial until the start entry has started. A tool run next to a server can no
+  longer confirm an update for a server that then fails.
 - **The stub leaves no lock files behind.** `jpack.lock` and `jpack.update.lock` are gone from the install folder. On Linux the locks
   are taken on the install folder and on `jpack.json`, so nothing is created; on Windows a small file in the temp folder exists
   only while the app runs.

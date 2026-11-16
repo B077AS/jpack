@@ -11,7 +11,10 @@ import java.util.Map;
  */
 public final class EntrySpec {
 
-    /** Folder of the Java runtime. */
+    /** The {@link #runtime} of an entry that runs on the Java installed on the machine ({@code JAVA_HOME}, else the {@code PATH}). */
+    public static final String SYSTEM_RUNTIME = "system";
+
+    /** Folder of the Java runtime, or {@link #SYSTEM_RUNTIME}. */
     public String runtime = "runtime";
     /** The Java executable, when it is not the runtime's own (a renamed copy, for the name in the task manager). */
     public String java;

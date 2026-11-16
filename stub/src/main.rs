@@ -116,8 +116,14 @@ fn run() -> i32 {
     let extra: Vec<OsString> = std::env::args_os().skip(1).collect();
     let runs = Arc::new(AtomicU64::new(0));
     let mut entry_name = app.installed().launch.start.clone();
+    // A run of another entry than the start entry (a command line tool next to a server the start entry runs) never
+    // decides whether a new release is healthy: that is the start entry's run. Otherwise `tool status`, run during the
+    // server's first seconds after an update, would confirm the release for it, and a server that then fails is not
+    // rolled back. An AppImage that was just replaced also starts its next program this way; it has no trial anyway.
+    let mut side_run = false;
     // An AppImage that was just replaced starts the image anew and says which program to run in it.
     if let Some(wanted) = std::env::var("JPACK_START").ok().filter(|name| app.installed().launch.entries.contains_key(name)) {
+        side_run = wanted != entry_name;
         entry_name = wanted;
     }
     let mut rolled_back = false;
@@ -129,7 +135,7 @@ fn run() -> i32 {
         if !installed.launch.entries.contains_key(&entry_name) {
             return fatal(&format!("The installation does not know how to start '{entry_name}'."));
         }
-        let trial = writable && layout.on_trial();
+        let trial = writable && !side_run && layout.on_trial();
         *app.next.lock().unwrap() = None;
         app.trial.store(trial, Ordering::SeqCst);
         let run = runs.fetch_add(1, Ordering::SeqCst) + 1;
@@ -248,6 +254,10 @@ impl Starter<'_> {
                 return Err(126);
             }
         };
+        #[cfg(windows)]
+        if entry.console {
+            use_parent_console(&mut command);
+        }
         // In an AppImage, links and shortcuts must point at the AppImage file, not at the stub inside its mount.
         let program = self.app_image.unwrap_or(self.exe);
         command.env("JPACK_HOME", &self.layout.root).env("JPACK_EXE", program).env("JPACK_NAME", &installed.name).env("JPACK_VERSION", &installed.version).env("JPACK_ENTRY", entry_name);
@@ -482,6 +492,52 @@ fn message_box(message: &str) {
     const MB_ICONERROR: u32 = 0x10;
     unsafe {
         MessageBoxW(std::ptr::null_mut(), text.as_ptr(), caption.as_ptr(), MB_ICONERROR);
+    }
+}
+
+/// A console entry started from a terminal (a command line tool) runs in that terminal. The stub is a GUI program on
+/// Windows, so it has no console of its own and `java.exe` would otherwise open a new window and its output would be lost:
+/// the stub attaches to the console of the program that started it, and hands the console to the entry as its standard
+/// streams where the stub's own are not set. Started without a terminal (a shortcut, a service), nothing changes; streams
+/// the stub was given (redirected to a file, a service wrapper's log) are inherited as before.
+#[cfg(windows)]
+fn use_parent_console(command: &mut std::process::Command) {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn AttachConsole(process: u32) -> i32;
+        fn GetConsoleWindow() -> *mut std::ffi::c_void;
+        fn GetStdHandle(which: u32) -> *mut std::ffi::c_void;
+    }
+    const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
+    const STD_INPUT_HANDLE: u32 = -10i32 as u32;
+    const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
+    const STD_ERROR_HANDLE: u32 = -12i32 as u32;
+    let unset = |which: u32| {
+        let handle = unsafe { GetStdHandle(which) };
+        handle.is_null() || handle as isize == -1
+    };
+    // Which streams the stub was really given. When it was given its output streams (a pipe, a file, a service wrapper's
+    // log), they are what the program should write to: leave everything alone. Attaching would replace the stub's own
+    // handles with the console's, so neither the program nor the stub's log would reach them any more (tried).
+    let (no_in, no_out, no_err) = (unset(STD_INPUT_HANDLE), unset(STD_OUTPUT_HANDLE), unset(STD_ERROR_HANDLE));
+    if !(no_out && no_err) {
+        return;
+    }
+    let attached = unsafe { !GetConsoleWindow().is_null() || AttachConsole(ATTACH_PARENT_PROCESS) != 0 };
+    if !attached {
+        return;
+    }
+    let open = |name: &str, write: bool| std::fs::OpenOptions::new().read(true).write(write).open(name).ok();
+    if no_in {
+        if let Some(input) = open("CONIN$", true) {
+            command.stdin(input);
+        }
+    }
+    if let Some(output) = open("CONOUT$", true) {
+        command.stdout(output);
+    }
+    if let Some(output) = open("CONOUT$", true) {
+        command.stderr(output);
     }
 }
 

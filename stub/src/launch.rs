@@ -9,10 +9,20 @@ use std::process::Command;
 /// The command that starts `entry`. `extra` are the arguments the stub itself was started with (a file to open, an
 /// invite link, ...): they go to the program after the entry's own arguments.
 pub fn command(root: &Path, entry: &Entry, extra: &[OsString]) -> Result<Command, String> {
-    let java = java_executable(root, entry);
-    if !java.is_file() {
-        return Err(format!("the Java runtime is missing: {} does not exist", java.display()));
-    }
+    let java = if entry.uses_system_java() && entry.java.is_none() {
+        system_java(java_name(entry), std::env::var_os("JAVA_HOME"), std::env::var_os("PATH")).ok_or_else(|| {
+            format!(
+                "no Java was found: this app runs on the Java installed on the machine. Install Java, then set JAVA_HOME or put {} on the PATH",
+                java_name(entry)
+            )
+        })?
+    } else {
+        let java = java_executable(root, entry);
+        if !java.is_file() {
+            return Err(format!("the Java runtime is missing: {} does not exist", java.display()));
+        }
+        java
+    };
     let home = root.to_string_lossy().into_owned();
     let fill = |text: &str| text.replace("${home}", &home);
 
@@ -46,7 +56,12 @@ fn java_executable(root: &Path, entry: &Entry) -> PathBuf {
     if let Some(java) = &entry.java {
         return resolve(root, java);
     }
-    let name = if cfg!(windows) {
+    resolve(root, &entry.runtime).join("bin").join(java_name(entry))
+}
+
+/// The file name of the Java launcher an entry starts with.
+fn java_name(entry: &Entry) -> &'static str {
+    if cfg!(windows) {
         if entry.console {
             "java.exe"
         } else {
@@ -54,8 +69,18 @@ fn java_executable(root: &Path, entry: &Entry) -> PathBuf {
         }
     } else {
         "java"
-    };
-    resolve(root, &entry.runtime).join("bin").join(name)
+    }
+}
+
+/// The machine's Java: `<JAVA_HOME>/bin/<name>` when `JAVA_HOME` names a Java, else the first `<name>` on the `PATH`.
+fn system_java(name: &str, java_home: Option<OsString>, path: Option<OsString>) -> Option<PathBuf> {
+    if let Some(home) = java_home.filter(|home| !home.is_empty()) {
+        let java = PathBuf::from(home).join("bin").join(name);
+        if java.is_file() {
+            return Some(java);
+        }
+    }
+    std::env::split_paths(&path?).map(|dir| dir.join(name)).find(|java| java.is_file())
 }
 
 /// Joins paths the way Java expects them on this system. A trailing `*` (all jars of a folder) is kept as it is.
@@ -121,6 +146,32 @@ mod tests {
 
         assert_eq!(args(&command), vec!["--module-path".to_string(), root.join("app").display().to_string(), "-m".into(), "demo/demo.Main".into()]);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_machines_java_comes_from_java_home_first_then_the_path() {
+        let root = root();
+        let name = if cfg!(windows) { "javaw.exe" } else { "java" };
+        let home = root.join("runtime");
+        let other = root.join("other").join("bin");
+        fs::create_dir_all(&other).unwrap();
+        fs::write(other.join(name), "").unwrap();
+        let path = std::env::join_paths([root.join("empty"), other.clone()]).unwrap();
+
+        assert_eq!(system_java(name, Some(home.clone().into()), Some(path.clone())), Some(home.join("bin").join(name)));
+        assert_eq!(system_java(name, Some(root.join("no-java").into()), Some(path.clone())), Some(other.join(name)), "a JAVA_HOME without Java is passed over");
+        assert_eq!(system_java(name, None, Some(path)), Some(other.join(name)));
+        assert_eq!(system_java(name, None, None), None);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_entry_on_the_machines_java_reports_when_there_is_none() {
+        let entry = entry(r#"{"runtime":"system","classpath":["app/demo.jar"],"mainClass":"demo.Main"}"#);
+        // The test process's own JAVA_HOME and PATH decide; only the message is checked when nothing is found.
+        if let Err(error) = command(Path::new("no-such-install-folder"), &entry, &[]) {
+            assert!(error.contains("no Java was found"), "{error}");
+        }
     }
 
     #[test]

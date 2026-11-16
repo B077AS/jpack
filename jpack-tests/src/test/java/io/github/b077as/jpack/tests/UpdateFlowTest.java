@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
@@ -145,6 +146,42 @@ class UpdateFlowTest {
             // The replaced files are deleted once the new app has started.
             assertFalse(Files.exists(lab.install.resolve("old")), "old/ is gone");
             assertFalse(Files.exists(lab.install.resolve("update")), "update/ is gone");
+        }
+    }
+
+    @Test
+    void anAppOnTheMachinesJavaShipsNoRuntimeAndUpdatesLikeAnyOther() throws Exception {
+        try (Lab lab = new Lab("system-java")) {
+            Packager.Packaged one = lab.build(new Lab.Recipe("1.0.0").onSystemJava().withLauncher());
+            lab.install(one);
+            lab.publish(lab.build(new Lab.Recipe("2.0.0").onSystemJava().withLauncher()));
+            assertFalse(Files.exists(lab.install.resolve("runtime")), "no runtime is installed");
+            assertTrue(Files.readString(lab.install.resolve("jpack.json")).contains("\"runtime\": \"system\""));
+
+            // JAVA_HOME names the Java to use; the PATH has none.
+            Path emptyPath = Files.createDirectories(lab.dir.resolve("empty-path"));
+            Lab.Run run = lab.run(Map.of("JAVA_HOME", Lab.Runtimes_.base().toString(), "PATH", emptyPath.toString()));
+
+            assertEquals(0, run.exitCode(), run.log());
+            List<String> lines = lab.lines();
+            assertEquals(2, lines.size(), lines + "\n" + run.log());
+            assertTrue(has(lines.subList(0, 1), "launcher 1.0.0", "available=true", "version=2.0.0"), lines.get(0));
+            assertEquals("app 2.0.0 logging=false args= installed=2.0.0", lines.get(1));
+            assertFalse(Files.exists(lab.install.resolve("runtime")), "an update brings no runtime either");
+        }
+    }
+
+    @Test
+    void anAppOnTheMachinesJavaSaysSoWhenThereIsNoJava() throws Exception {
+        try (Lab lab = new Lab("system-java-missing")) {
+            lab.install(lab.build(new Lab.Recipe("1.0.0").onSystemJava().withoutUpdates()));
+
+            Path emptyPath = Files.createDirectories(lab.dir.resolve("empty-path"));
+            Lab.Run run = lab.run(Map.of("JAVA_HOME", lab.dir.resolve("no-java").toString(), "PATH", emptyPath.toString()));
+
+            assertEquals(126, run.exitCode(), run.log());
+            assertTrue(run.log().contains("no Java was found"), run.log());
+            assertEquals(List.of(), lab.lines(), "nothing started");
         }
     }
 
@@ -366,6 +403,31 @@ class UpdateFlowTest {
             lab.run();
             assertEquals("1.0.0", lab.installedVersion());
             assertTrue(lab.requests.stream().noneMatch(request -> request.contains(".zip")), "not downloaded again: " + lab.requests);
+        }
+    }
+
+    /** A server (the start entry) with a command line tool (the launcher, started with JPACK_START) that updates it. */
+    @Test
+    void aToolRunNextToTheStartEntryNeverDecidesWhetherANewVersionIsHealthy() throws Exception {
+        try (Lab lab = new Lab("side-run-trial")) {
+            lab.install(lab.build(new Lab.Recipe("1.0.0").withLauncher().startingTheApp()));
+            lab.publish(lab.build(new Lab.Recipe("2.0.0").withLauncher().startingTheApp().behavior("crash")));
+            Map<String, String> tool = Map.of("JPACK_START", "launcher", "SAMPLE_LAUNCHER", "tool");
+
+            // The tool downloads the update; with nothing else running, it is swapped in when the tool exits.
+            Lab.Run download = lab.run(tool);
+            assertEquals(0, download.exitCode(), download.log());
+            assertEquals("2.0.0", lab.installedVersion(), download.log());
+
+            // The tool runs again and ends fine: that says nothing about the app, so the release stays on trial.
+            Lab.Run status = lab.run(tool);
+            assertEquals(0, status.exitCode(), status.log());
+            assertTrue(Files.exists(lab.install.resolve("old")), "the old version is kept: " + status.log());
+
+            // The app's own first start fails: the old version comes back.
+            Lab.Run server = lab.run();
+            assertEquals("1.0.0", lab.installedVersion(), lab.lines() + "\n" + server.log());
+            assertTrue(server.log().contains("went back to version 1.0.0"), server.log());
         }
     }
 

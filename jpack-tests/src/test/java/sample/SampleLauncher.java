@@ -59,7 +59,8 @@ public final class SampleLauncher {
                         line.append(" failed=").append(e.getCause().getMessage());
                     }
                 }
-            } else {
+            } else if (!"tool".equals(System.getenv("SAMPLE_LAUNCHER"))) {
+                // ("tool": a command line tool next to the app, which starts nothing after it.)
                 jpack.startAfterExit("app");
             }
         }

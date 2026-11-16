@@ -114,7 +114,7 @@ pub struct Launch {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Entry {
-    /// Folder of the Java runtime, relative to the install folder.
+    /// Folder of the Java runtime, relative to the install folder, or [`SYSTEM_RUNTIME`]: the Java installed on the machine.
     #[serde(default = "default_runtime")]
     pub runtime: String,
     /// The Java executable, relative to the install folder. Default: `<runtime>/bin/javaw.exe` or `<runtime>/bin/java`.
@@ -141,6 +141,16 @@ pub struct Entry {
 
 fn default_runtime() -> String {
     "runtime".to_string()
+}
+
+/// The `runtime` of an entry that runs on the Java installed on the machine (`JAVA_HOME`, else the `PATH`), not on one
+/// shipped in the install folder.
+pub const SYSTEM_RUNTIME: &str = "system";
+
+impl Entry {
+    pub fn uses_system_java(&self) -> bool {
+        self.runtime == SYSTEM_RUNTIME
+    }
 }
 
 impl Manifest {
@@ -195,7 +205,10 @@ impl Manifest {
             if entry.main_class.is_none() && entry.main_module.is_none() {
                 return Err(format!("entry '{name}' has neither a main class nor a main module"));
             }
-            let mut paths: Vec<&String> = vec![&entry.runtime];
+            let mut paths: Vec<&String> = Vec::new();
+            if !entry.uses_system_java() {
+                paths.push(&entry.runtime);
+            }
             paths.extend(entry.java.iter());
             paths.extend(entry.classpath.iter());
             paths.extend(entry.module_path.iter());
@@ -316,6 +329,16 @@ mod tests {
         let mut manifest = sample("1.0.0");
         manifest.launch.entries.get_mut("app").unwrap().classpath = vec!["../evil.jar".into()];
         assert!(manifest.validate().is_err());
+    }
+
+    #[test]
+    fn an_entry_can_use_the_java_installed_on_the_machine() {
+        let mut manifest = sample("1.0.0");
+        let entry = manifest.launch.entries.get_mut("app").unwrap();
+        entry.runtime = SYSTEM_RUNTIME.into();
+        assert!(entry.uses_system_java());
+        assert!(manifest.validate().is_ok());
+        assert!(!sample("1.0.0").launch.entries["app"].uses_system_java());
     }
 
     #[test]

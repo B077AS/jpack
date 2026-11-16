@@ -48,6 +48,9 @@ final class Lab implements AutoCloseable {
         String behavior = "exit";
         Path runtime = Runtimes_.base();
         boolean launcher;
+        /** No runtime part: the entries run on the Java installed on the machine. */
+        boolean systemJava;
+        boolean startApp;
         boolean branded;
         boolean archive;
         boolean appImage;
@@ -69,6 +72,17 @@ final class Lab implements AutoCloseable {
 
         Recipe runtime(Path value) {
             runtime = value;
+            return this;
+        }
+
+        /** The app is the start entry even with a launcher (a server with a command line tool). */
+        Recipe startingTheApp() {
+            startApp = true;
+            return this;
+        }
+
+        Recipe onSystemJava() {
+            systemJava = true;
             return this;
         }
 
@@ -190,10 +204,15 @@ final class Lab implements AutoCloseable {
             spec.branding = new io.github.b077as.jpack.build.Branding();
         }
         spec.rawParts = recipe.rawParts;
-        spec.parts.put("runtime", recipe.runtime);
+        if (!recipe.systemJava) {
+            spec.parts.put("runtime", recipe.runtime);
+        }
         spec.parts.put("app", app);
 
         EntrySpec appEntry = new EntrySpec();
+        if (recipe.systemJava) {
+            appEntry.runtime = EntrySpec.SYSTEM_RUNTIME;
+        }
         appEntry.classpath.add("app/sample-app.jar");
         appEntry.mainClass = "sample.SampleApp";
         spec.entries.put("app", appEntry);
@@ -204,10 +223,13 @@ final class Lab implements AutoCloseable {
             jar(launcher.resolve("sample-launcher.jar"), Map.of("sample-version.txt", recipe.version));
             spec.parts.put("launcher", launcher);
             EntrySpec launcherEntry = new EntrySpec();
+            if (recipe.systemJava) {
+                launcherEntry.runtime = EntrySpec.SYSTEM_RUNTIME;
+            }
             launcherEntry.classpath.add("launcher/sample-launcher.jar");
             launcherEntry.mainClass = "sample.SampleLauncher";
             spec.entries.put("launcher", launcherEntry);
-            spec.start = "launcher";
+            spec.start = recipe.startApp ? "app" : "launcher";
         }
         return new Packager().run(spec);
     }
