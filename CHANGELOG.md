@@ -3,7 +3,7 @@
 All published versions of jpack, newest first. jpack is early software (version 0.x): APIs and file formats can still change
 between versions, and this file says when they do.
 
-## Unreleased
+## 0.1.3 - 2026-11-16
 
 ### Added
 - **`systemJava`**: a release without a Java runtime. The entries run on the Java installed on the machine (`JAVA_HOME`, else
@@ -11,9 +11,9 @@ between versions, and this file says when they do.
   `"runtime": "system"`, which an older stub does not understand, so the installed stub has to come from this version. `system` can
   no longer be the name of a part.
 - **Command line launchers on Windows**: `"console": true` in `launcher` starts it with `java.exe`, and a console entry started from a
-  terminal now runs in that terminal (the stub attaches to it and passes it on as the standard streams it was not given) instead
-  of opening a new window whose output is lost. Streams the stub was given, such as a file or a service wrapper's log, are passed
-  on as before.
+  terminal now runs in that terminal instead of opening a new window whose output is lost: when the stub was given no output
+  streams, it attaches to the terminal it was started from and hands it to the entry. Streams the stub was given (a pipe, a
+  file, a service wrapper's log) are passed on untouched.
 - **`start`**: which entry the stub starts unless `JPACK_START` says otherwise. `"start": "app"` with a launcher suits a server
   whose launcher is a command line tool started with `JPACK_START=launcher`.
 - **`log`**: `"log": false` in `jpack.json` (or `log` in the pom, `-Djpack.log=false`) stops the stub from writing `jpack.log`.

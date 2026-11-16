@@ -120,7 +120,7 @@ JVM: not the jars, not the runtime, not the launcher.
 <plugin>
   <groupId>io.github.b077as</groupId>
   <artifactId>jpack-maven-plugin</artifactId>
-  <version>0.1.2</version>
+  <version>0.1.3</version>
   <executions>
     <execution>
       <goals><goal>package</goal></goals>
@@ -157,7 +157,7 @@ Wrap `image/<platform>/` in an installer (Inno Setup, WiX, a `.deb`...), or hand
 <dependency>
   <groupId>io.github.b077as</groupId>
   <artifactId>jpack-api</artifactId>
-  <version>0.1.2</version>
+  <version>0.1.3</version>
 </dependency>
 ```
 
